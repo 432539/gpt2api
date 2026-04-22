@@ -18,6 +18,7 @@ type Config struct {
 	Security  SecurityConfig  `mapstructure:"security"`
 	Scheduler SchedulerConfig `mapstructure:"scheduler"`
 	Upstream  UpstreamConfig  `mapstructure:"upstream"`
+	MiniMax   MiniMaxConfig   `mapstructure:"minimax"`
 	EPay      EPayConfig      `mapstructure:"epay"`
 	Backup    BackupConfig    `mapstructure:"backup"`
 	SMTP      SMTPConfig      `mapstructure:"smtp"`
@@ -78,6 +79,17 @@ type UpstreamConfig struct {
 	BaseURL            string `mapstructure:"base_url"`
 	RequestTimeoutSec  int    `mapstructure:"request_timeout_sec"`
 	SSEReadTimeoutSec  int    `mapstructure:"sse_read_timeout_sec"`
+}
+
+// MiniMaxConfig MiniMax 官方 API 配置。
+// APIKey 为空时 MiniMax 模型路由会返回 503。
+type MiniMaxConfig struct {
+	// APIKey MiniMax 平台 API Key(Bearer Token)。
+	// 环境变量:GPT2API_MINIMAX_API_KEY
+	APIKey string `mapstructure:"api_key"`
+	// BaseURL 覆盖默认 API 地址,留空使用 https://api.minimax.chat/v1
+	// 可用于私有化部署或代理测试。
+	BaseURL string `mapstructure:"base_url"`
 }
 
 // BackupConfig 数据库备份配置。

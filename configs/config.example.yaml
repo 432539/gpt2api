@@ -53,6 +53,13 @@ upstream:
   request_timeout_sec: 60
   sse_read_timeout_sec: 300
 
+# MiniMax 官方 API(可选)
+# 获取 API Key:https://platform.minimaxi.com/
+# 环境变量覆盖:GPT2API_MINIMAX_API_KEY
+minimax:
+  api_key: ""        # 填入后,provider=minimax 的模型将通过官方 API 调用
+  base_url: ""       # 留空使用默认 https://api.minimax.chat/v1
+
 # 支付(易支付)
 epay:
   gateway_url: ""
