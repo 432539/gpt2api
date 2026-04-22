@@ -53,10 +53,10 @@ func (d *DAO) GetByID(ctx context.Context, id uint64) (*Model, error) {
 func (d *DAO) Create(ctx context.Context, m *Model) error {
 	res, err := d.db.ExecContext(ctx, `
 INSERT INTO models
-  (slug, type, upstream_model_slug, input_price_per_1m, output_price_per_1m,
+  (slug, type, provider, upstream_model_slug, input_price_per_1m, output_price_per_1m,
    cache_read_price_per_1m, image_price_per_call, description, enabled)
-VALUES (?,?,?,?,?,?,?,?,?)`,
-		m.Slug, m.Type, m.UpstreamModelSlug,
+VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		m.Slug, m.Type, m.Provider, m.UpstreamModelSlug,
 		m.InputPricePer1M, m.OutputPricePer1M, m.CacheReadPricePer1M,
 		m.ImagePricePerCall, m.Description, m.Enabled,
 	)
@@ -72,12 +72,12 @@ VALUES (?,?,?,?,?,?,?,?,?)`,
 func (d *DAO) Update(ctx context.Context, m *Model) error {
 	res, err := d.db.ExecContext(ctx, `
 UPDATE models SET
-  type = ?, upstream_model_slug = ?,
+  type = ?, provider = ?, upstream_model_slug = ?,
   input_price_per_1m = ?, output_price_per_1m = ?,
   cache_read_price_per_1m = ?, image_price_per_call = ?,
   description = ?, enabled = ?
 WHERE id = ? AND deleted_at IS NULL`,
-		m.Type, m.UpstreamModelSlug,
+		m.Type, m.Provider, m.UpstreamModelSlug,
 		m.InputPricePer1M, m.OutputPricePer1M, m.CacheReadPricePer1M,
 		m.ImagePricePerCall, m.Description, m.Enabled,
 		m.ID,

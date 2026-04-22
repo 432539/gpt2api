@@ -35,6 +35,7 @@ func NewAdminHandler(dao *DAO, registry *Registry, auditDAO *audit.DAO) *AdminHa
 type upsertReq struct {
 	Slug                string `json:"slug"`
 	Type                string `json:"type"`
+	Provider            string `json:"provider"`
 	UpstreamModelSlug   string `json:"upstream_model_slug"`
 	InputPricePer1M     int64  `json:"input_price_per_1m"`
 	OutputPricePer1M    int64  `json:"output_price_per_1m"`
@@ -48,6 +49,7 @@ func (r *upsertReq) validate(forCreate bool) error {
 	r.Slug = strings.TrimSpace(r.Slug)
 	r.UpstreamModelSlug = strings.TrimSpace(r.UpstreamModelSlug)
 	r.Type = strings.TrimSpace(strings.ToLower(r.Type))
+	r.Provider = strings.TrimSpace(strings.ToLower(r.Provider))
 
 	if forCreate {
 		if !slugRe.MatchString(r.Slug) {
@@ -56,6 +58,9 @@ func (r *upsertReq) validate(forCreate bool) error {
 	}
 	if r.Type != TypeChat && r.Type != TypeImage {
 		return errors.New("type 只能为 chat 或 image")
+	}
+	if r.Provider != ProviderChatGPT && r.Provider != ProviderMiniMax {
+		return errors.New("provider 只能为空(chatgpt)或 minimax")
 	}
 	if r.UpstreamModelSlug == "" {
 		return errors.New("upstream_model_slug 不能为空")
@@ -108,6 +113,7 @@ func (h *AdminHandler) Create(c *gin.Context) {
 	}
 	m := &Model{
 		Slug: req.Slug, Type: req.Type,
+		Provider:            req.Provider,
 		UpstreamModelSlug:   req.UpstreamModelSlug,
 		InputPricePer1M:     req.InputPricePer1M,
 		OutputPricePer1M:    req.OutputPricePer1M,
@@ -157,6 +163,7 @@ func (h *AdminHandler) Update(c *gin.Context) {
 		return
 	}
 	cur.Type = req.Type
+	cur.Provider = req.Provider
 	cur.UpstreamModelSlug = req.UpstreamModelSlug
 	cur.InputPricePer1M = req.InputPricePer1M
 	cur.OutputPricePer1M = req.OutputPricePer1M

@@ -29,6 +29,7 @@ import (
 	"github.com/432539/gpt2api/internal/scheduler"
 	"github.com/432539/gpt2api/internal/server"
 	"github.com/432539/gpt2api/internal/settings"
+	minimaxpkg "github.com/432539/gpt2api/internal/upstream/minimax"
 	"github.com/432539/gpt2api/internal/usage"
 	"github.com/432539/gpt2api/internal/user"
 	"github.com/432539/gpt2api/pkg/crypto"
@@ -139,6 +140,23 @@ func main() {
 		Limiter:   limiter,
 		Usage:     usageLogger,
 		AccSvc:    accSvc,
+	}
+
+	// MiniMax 官方 API 客户端(可选:配置文件里 minimax.api_key 为空则跳过初始化)。
+	if cfg.MiniMax.APIKey != "" {
+		mmCli, err := minimaxpkg.New(minimaxpkg.Options{
+			APIKey:  cfg.MiniMax.APIKey,
+			BaseURL: cfg.MiniMax.BaseURL,
+			Timeout: time.Duration(cfg.Upstream.RequestTimeoutSec) * time.Second,
+		})
+		if err != nil {
+			log.Warn("minimax client init failed, MiniMax models will be unavailable", zap.Error(err))
+		} else {
+			gwH.MiniMax = mmCli
+			log.Info("minimax client initialized")
+		}
+	} else {
+		log.Info("minimax.api_key not set; MiniMax models will return 503")
 	}
 
 	imageDAO := image.NewDAO(sqldb)

@@ -29,6 +29,7 @@ import (
 	"github.com/432539/gpt2api/internal/ratelimit"
 	"github.com/432539/gpt2api/internal/scheduler"
 	"github.com/432539/gpt2api/internal/upstream/chatgpt"
+	"github.com/432539/gpt2api/internal/upstream/minimax"
 	"github.com/432539/gpt2api/internal/usage"
 	"github.com/432539/gpt2api/internal/user"
 	"github.com/432539/gpt2api/pkg/logger"
@@ -48,6 +49,9 @@ type Handler struct {
 	}
 	// Images 可选:若挂载,chat/completions 里指定图像模型会自动转派。
 	Images *ImagesHandler
+
+	// MiniMax 可选:若注入则 provider=minimax 的模型走 MiniMax 官方 API。
+	MiniMax *minimax.Client
 
 	// Settings 可选:若注入则在构造上游 client 时应用动态超时。
 	Settings interface {
@@ -159,6 +163,11 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		}
 		// 借用当前已鉴权/白名单通过的 ak + 模型,走图像流程并以 OpenAI chat 响应格式返回。
 		h.Images.handleChatAsImage(c, rec, ak, m, &req, startAt)
+		return
+	}
+	// MiniMax provider:直接调官方 API,不经过 chatgpt.com 账号调度器。
+	if m.Provider == modelpkg.ProviderMiniMax {
+		h.handleMiniMaxChat(c, rec, ak, m, &req, startAt)
 		return
 	}
 	rec.ModelID = m.ID
@@ -642,12 +651,257 @@ func (h *Handler) ListModels(c *gin.Context) {
 	}
 	data := make([]gin.H, 0, len(list))
 	for _, m := range list {
+		ownedBy := "chatgpt"
+		if m.Provider != "" {
+			ownedBy = m.Provider
+		}
 		data = append(data, gin.H{
 			"id":       m.Slug,
 			"object":   "model",
 			"created":  m.CreatedAt.Unix(),
-			"owned_by": "chatgpt",
+			"owned_by": ownedBy,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"object": "list", "data": data})
+}
+
+// handleMiniMaxChat 处理 provider=minimax 的文字对话请求。
+//
+// 与 chatgpt 路径的主要区别:
+//   - 不需要账号调度器,直接用 MiniMax 官方 API Key;
+//   - SSE 格式是标准 OpenAI delta chunk,而非 chatgpt.com 的 JSON-Patch 格式;
+//   - 计费按实际 tokens(从响应体拿到)结算;
+//   - 没有"免费账号降级"等逻辑。
+func (h *Handler) handleMiniMaxChat(c *gin.Context, rec *usage.Log, ak *apikey.APIKey,
+	m *modelpkg.Model, req *ChatCompletionsRequest, startAt time.Time) {
+
+	rec.ModelID = m.ID
+
+	if h.MiniMax == nil {
+		rec.Status = usage.StatusFailed
+		rec.ErrorCode = "minimax_not_configured"
+		openAIError(c, http.StatusServiceUnavailable, "minimax_not_configured",
+			"MiniMax API 未配置,请在 config.yaml 的 minimax.api_key 中填入 API Key")
+		return
+	}
+
+	refID := uuid.NewString()
+
+	// 倍率 + RPM
+	ratio := 1.0
+	rpmCap, tpmCap := ak.RPM, ak.TPM
+	if h.Groups != nil {
+		if g, err := h.Groups.OfUser(c.Request.Context(), ak.UserID); err == nil && g != nil {
+			ratio = g.Ratio
+			if rpmCap == 0 {
+				rpmCap = g.RPMLimit
+			}
+			if tpmCap == 0 {
+				tpmCap = g.TPMLimit
+			}
+		}
+	}
+	if h.Limiter != nil {
+		if ok, _, err := h.Limiter.AllowRPM(c.Request.Context(), ak.ID, rpmCap); err == nil && !ok {
+			rec.Status = usage.StatusFailed
+			rec.ErrorCode = "rate_limit_rpm"
+			openAIError(c, http.StatusTooManyRequests, "rate_limit_rpm",
+				"触发每分钟请求数限制 (RPM),请稍后再试")
+			return
+		}
+	}
+
+	// 预扣
+	promptTokens := roughEstimateTokens(req.Messages)
+	estTokens := req.MaxTokens
+	if estTokens <= 0 {
+		estTokens = 2048
+	}
+	estCost := billing.EstimateChat(m, promptTokens, estTokens, ratio)
+
+	if h.Limiter != nil {
+		if ok, _, err := h.Limiter.AllowTPM(c.Request.Context(), ak.ID, tpmCap,
+			int64(promptTokens+estTokens)); err == nil && !ok {
+			rec.Status = usage.StatusFailed
+			rec.ErrorCode = "rate_limit_tpm"
+			openAIError(c, http.StatusTooManyRequests, "rate_limit_tpm",
+				"触发每分钟 Token 限制 (TPM),请稍后再试")
+			return
+		}
+	}
+
+	if err := h.Billing.PreDeduct(c.Request.Context(), ak.UserID, ak.ID, estCost, refID, "minimax chat prepay"); err != nil {
+		rec.Status = usage.StatusFailed
+		if errors.Is(err, billing.ErrInsufficient) {
+			rec.ErrorCode = "insufficient_balance"
+			openAIError(c, http.StatusPaymentRequired, "insufficient_balance",
+				"积分不足,请前往「账单与充值」充值后再试")
+			return
+		}
+		rec.ErrorCode = "billing_error"
+		openAIError(c, http.StatusInternalServerError, "billing_error", "计费异常:"+err.Error())
+		return
+	}
+
+	refunded := false
+	refund := func(code string) {
+		rec.Status = usage.StatusFailed
+		rec.ErrorCode = code
+		if refunded {
+			return
+		}
+		refunded = true
+		_ = h.Billing.Refund(context.Background(), ak.UserID, ak.ID, estCost, refID, "minimax chat refund")
+	}
+
+	upstreamModel := m.UpstreamModelSlug
+	if upstreamModel == "" {
+		upstreamModel = m.Slug
+	}
+
+	id := "chatcmpl-" + uuid.NewString()
+
+	if req.Stream {
+		stream, err := h.MiniMax.StreamChat(c.Request.Context(), upstreamModel, req.Messages, req.MaxTokens)
+		if err != nil {
+			refund("upstream_error")
+			openAIError(c, http.StatusBadGateway, "upstream_error", "MiniMax 请求失败:"+err.Error())
+			return
+		}
+		h.streamMiniMax(c, id, req.Model, stream)
+	} else {
+		content, promptTok, completionTok, err := h.MiniMax.Chat(c.Request.Context(), upstreamModel, req.Messages, req.MaxTokens)
+		if err != nil {
+			refund("upstream_error")
+			openAIError(c, http.StatusBadGateway, "upstream_error", "MiniMax 请求失败:"+err.Error())
+			return
+		}
+		if promptTok > 0 {
+			promptTokens = promptTok
+		}
+		completionTokens := completionTok
+		if completionTokens == 0 {
+			completionTokens = (len(content) + 3) / 4
+		}
+
+		actual := billing.ComputeChatCost(m, promptTokens, completionTokens, ratio)
+		if err := h.Billing.Settle(context.Background(), ak.UserID, ak.ID, estCost, actual, refID, "minimax chat settle"); err != nil {
+			logger.L().Error("minimax billing settle", zap.Error(err), zap.String("ref", refID))
+		}
+		_ = h.Keys.DAO().TouchUsage(context.Background(), ak.ID, c.ClientIP(), actual)
+
+		rec.Status = usage.StatusSuccess
+		rec.InputTokens = promptTokens
+		rec.OutputTokens = completionTokens
+		rec.CreditCost = actual
+		rec.DurationMs = int(time.Since(startAt).Milliseconds())
+
+		resp := ChatCompletionResponse{
+			ID:      id,
+			Object:  "chat.completion",
+			Created: time.Now().Unix(),
+			Model:   req.Model,
+			Choices: []ChatCompletionChoice{{
+				Index:        0,
+				Message:      chatgpt.ChatMessage{Role: "assistant", Content: content},
+				FinishReason: "stop",
+			}},
+			Usage: ChatCompletionUsage{
+				PromptTokens:     promptTokens,
+				CompletionTokens: completionTokens,
+				TotalTokens:      promptTokens + completionTokens,
+			},
+		}
+		c.JSON(http.StatusOK, resp)
+		return
+	}
+
+	// 流式时结算(从 ctx 里读 completion_tokens)
+	completionTokens := h.lastCompletionTokens(c)
+	actual := billing.ComputeChatCost(m, promptTokens, completionTokens, ratio)
+	if err := h.Billing.Settle(context.Background(), ak.UserID, ak.ID, estCost, actual, refID, "minimax chat settle"); err != nil {
+		logger.L().Error("minimax billing settle", zap.Error(err), zap.String("ref", refID))
+	}
+	_ = h.Keys.DAO().TouchUsage(context.Background(), ak.ID, c.ClientIP(), actual)
+	if h.Limiter != nil {
+		real := int64(promptTokens + completionTokens)
+		est := int64(promptTokens + estTokens)
+		if diff := real - est; diff > 0 {
+			h.Limiter.AdjustTPM(context.Background(), ak.ID, tpmCap, diff)
+		}
+	}
+
+	rec.Status = usage.StatusSuccess
+	rec.InputTokens = promptTokens
+	rec.OutputTokens = completionTokens
+	rec.CreditCost = actual
+}
+
+// streamMiniMax 将 MiniMax 标准 OpenAI-format SSE 转为 OpenAI 流式响应。
+//
+// MiniMax 使用标准格式:
+//
+//	data: {"choices":[{"delta":{"content":"..."},"finish_reason":null}]}
+//	data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+//	data: [DONE]
+func (h *Handler) streamMiniMax(c *gin.Context, id, model string, stream <-chan chatgpt.SSEEvent) {
+	w := c.Writer
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+
+	writeChunk(w, flusher, id, model, DeltaMsg{Role: "assistant"}, nil)
+
+	var total strings.Builder
+
+	for ev := range stream {
+		if ev.Err != nil {
+			logger.L().Warn("minimax stream err", zap.Error(ev.Err))
+			break
+		}
+		if len(ev.Data) == 0 {
+			continue
+		}
+		delta, done := extractMiniMaxDelta(ev.Data)
+		if delta != "" {
+			total.WriteString(delta)
+			writeChunk(w, flusher, id, model, DeltaMsg{Content: delta}, nil)
+		}
+		if done {
+			break
+		}
+	}
+
+	stop := "stop"
+	writeChunk(w, flusher, id, model, DeltaMsg{}, &stop)
+	fmt.Fprintf(w, "data: [DONE]\n\n")
+	if flusher != nil {
+		flusher.Flush()
+	}
+	c.Set("completion_tokens", (total.Len()+3)/4)
+}
+
+// extractMiniMaxDelta 从标准 OpenAI delta chunk 中提取增量文本。
+// 返回 (增量内容, 是否结束)。
+func extractMiniMaxDelta(data []byte) (string, bool) {
+	var chunk struct {
+		Choices []struct {
+			Delta struct {
+				Content string `json:"content"`
+			} `json:"delta"`
+			FinishReason *string `json:"finish_reason"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(data, &chunk); err != nil {
+		return "", false
+	}
+	if len(chunk.Choices) == 0 {
+		return "", false
+	}
+	choice := chunk.Choices[0]
+	done := choice.FinishReason != nil && *choice.FinishReason == "stop"
+	return choice.Delta.Content, done
 }
