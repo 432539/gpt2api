@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -296,9 +297,9 @@ func (q *QuotaProber) doProbe(ctx context.Context, a *Account, accessToken strin
 	}
 
 	var payload struct {
-		Type             string   `json:"type"`
-		BlockedFeatures  []string `json:"blocked_features"`
-		DefaultModelSlug string   `json:"default_model_slug"`
+		Type             string          `json:"type"`
+		BlockedFeatures  json.RawMessage `json:"blocked_features"`
+		DefaultModelSlug string          `json:"default_model_slug"`
 		LimitsProgress   []struct {
 			FeatureName string `json:"feature_name"`
 			Remaining   *int   `json:"remaining"`
@@ -309,7 +310,7 @@ func (q *QuotaProber) doProbe(ctx context.Context, a *Account, accessToken strin
 		return
 	}
 	out.defaultModel = payload.DefaultModelSlug
-	out.blockedFeatures = payload.BlockedFeatures
+	out.blockedFeatures = decodeBlockedFeatures(payload.BlockedFeatures)
 
 	for _, item := range payload.LimitsProgress {
 		if !isImageFeature(item.FeatureName) {
@@ -347,6 +348,181 @@ func isImageFeature(name string) bool {
 		return true
 	}
 	return strings.Contains(n, "image_gen") || strings.Contains(n, "img_gen")
+}
+
+func decodeBlockedFeatures(raw json.RawMessage) []string {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return nil
+	}
+
+	var direct []string
+	if err := json.Unmarshal(raw, &direct); err == nil {
+		return normalizeBlockedFeatures(direct)
+	}
+
+	var single string
+	if err := json.Unmarshal(raw, &single); err == nil {
+		return normalizeBlockedFeatures([]string{single})
+	}
+
+	var generic any
+	if err := json.Unmarshal(raw, &generic); err != nil {
+		return normalizeBlockedFeatures([]string{truncate(s, 200)})
+	}
+
+	var out []string
+	seen := make(map[string]struct{})
+	collectBlockedFeature(&out, seen, "", generic)
+	if len(out) > 0 {
+		return out
+	}
+	return normalizeBlockedFeatures([]string{truncate(s, 200)})
+}
+
+func normalizeBlockedFeatures(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, item := range in {
+		item = strings.TrimSpace(item)
+		if item == "" || strings.EqualFold(item, "null") {
+			continue
+		}
+		if len(item) > 200 {
+			item = truncate(item, 200)
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func collectBlockedFeature(out *[]string, seen map[string]struct{}, prefix string, v any) {
+	switch x := v.(type) {
+	case string:
+		addBlockedFeature(out, seen, formatBlockedFeature(prefix, x))
+	case []any:
+		for _, item := range x {
+			collectBlockedFeature(out, seen, prefix, item)
+		}
+	case map[string]any:
+		if summary := summarizeBlockedFeatureMap(prefix, x); summary != "" {
+			addBlockedFeature(out, seen, summary)
+			return
+		}
+		if len(x) == 0 {
+			return
+		}
+		keys := make([]string, 0, len(x))
+		for key := range x {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		before := len(*out)
+		for _, key := range keys {
+			nextPrefix := key
+			if prefix != "" {
+				nextPrefix = prefix + "." + key
+			}
+			switch vv := x[key].(type) {
+			case bool:
+				if vv {
+					addBlockedFeature(out, seen, nextPrefix)
+				}
+			default:
+				collectBlockedFeature(out, seen, nextPrefix, vv)
+			}
+		}
+		if len(*out) == before {
+			if raw, err := json.Marshal(x); err == nil {
+				addBlockedFeature(out, seen, truncate(string(raw), 200))
+			}
+		}
+	case bool:
+		if x {
+			addBlockedFeature(out, seen, prefix)
+		}
+	case float64:
+		if prefix != "" {
+			addBlockedFeature(out, seen, fmt.Sprintf("%s(%v)", prefix, x))
+		}
+	}
+}
+
+func summarizeBlockedFeatureMap(prefix string, m map[string]any) string {
+	name := firstBlockedFeatureString(m,
+		"feature_name", "feature", "name", "slug", "id", "key")
+	reason := firstBlockedFeatureString(m,
+		"blocked_reason", "reason", "reason_code", "code", "message", "status", "type")
+
+	if name == "" {
+		name = strings.TrimSpace(prefix)
+	}
+	if blocked, ok := m["blocked"].(bool); ok && blocked && reason == "" && name != "" {
+		return name
+	}
+	return formatBlockedFeature(name, reason)
+}
+
+func firstBlockedFeatureString(m map[string]any, keys ...string) string {
+	for _, key := range keys {
+		value, ok := m[key]
+		if !ok {
+			continue
+		}
+		switch v := value.(type) {
+		case string:
+			v = strings.TrimSpace(v)
+			if v != "" {
+				return v
+			}
+		case float64:
+			return fmt.Sprintf("%v", v)
+		case bool:
+			if v {
+				return "true"
+			}
+			return "false"
+		}
+	}
+	return ""
+}
+
+func formatBlockedFeature(name, detail string) string {
+	name = strings.TrimSpace(name)
+	detail = strings.TrimSpace(detail)
+	switch {
+	case name != "" && detail != "" && !strings.EqualFold(name, detail):
+		return fmt.Sprintf("%s(%s)", name, detail)
+	case name != "":
+		return name
+	default:
+		return detail
+	}
+}
+
+func addBlockedFeature(out *[]string, seen map[string]struct{}, item string) {
+	item = strings.TrimSpace(item)
+	if item == "" || strings.EqualFold(item, "null") {
+		return
+	}
+	if len(item) > 200 {
+		item = truncate(item, 200)
+	}
+	if _, ok := seen[item]; ok {
+		return
+	}
+	seen[item] = struct{}{}
+	*out = append(*out, item)
 }
 
 func friendlyProbeErr(err error) string {
