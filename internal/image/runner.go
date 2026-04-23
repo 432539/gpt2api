@@ -56,7 +56,7 @@ type RunOptions struct {
 	UserID            uint64
 	KeyID             uint64
 	ModelID           uint64
-	UpstreamModel     string           // 默认 "auto"(由上游根据 system_hints 挑选图像模型)
+	UpstreamModel     string // 默认 "auto"(由上游根据 system_hints 挑选图像模型)
 	Prompt            string
 	N                 int              // 期望返回的图片张数;够数 Poll 就立即返回(速度优先)
 	MaxAttempts       int              // 跨账号重试次数,仅用于无账号/限流等硬错误,默认 1
@@ -67,7 +67,7 @@ type RunOptions struct {
 
 // RunResult 是单次生图的输出。
 type RunResult struct {
-	Status         string   // success / failed
+	Status         string // success / failed
 	ConversationID string
 	AccountID      uint64
 	FileIDs        []string // chatgpt.com 侧的原始 ref("sed:" 前缀表示 sediment)
@@ -77,6 +77,39 @@ type RunResult struct {
 	ErrorMessage   string
 	Attempts       int // 跨账号尝试次数(runOnce 次数)
 	DurationMs     int64
+}
+
+func buildReferenceFileIDSet(refs []*chatgpt.UploadedFile) map[string]struct{} {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		if ref == nil || ref.FileID == "" {
+			continue
+		}
+		out[ref.FileID] = struct{}{}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func filterReferenceFileIDs(refs []string, referenceFileIDs map[string]struct{}) ([]string, int) {
+	if len(refs) == 0 || len(referenceFileIDs) == 0 {
+		return refs, 0
+	}
+	out := make([]string, 0, len(refs))
+	skipped := 0
+	for _, ref := range refs {
+		if _, ok := referenceFileIDs[ref]; ok {
+			skipped++
+			continue
+		}
+		out = append(out, ref)
+	}
+	return out, skipped
 }
 
 // Run 执行生图。会同步阻塞直到完成/失败;调用方自行做超时控制(传 ctx)。
@@ -226,9 +259,9 @@ func (r *Runner) runParallel(ctx context.Context, opt RunOptions, start time.Tim
 	go func() { wg.Wait(); close(ch) }()
 
 	var (
-		successCount  int
-		lastErrCode   string
-		lastErrMsg    string
+		successCount int
+		lastErrCode  string
+		lastErrMsg   string
 	)
 	for sr := range ch {
 		if sr.ok {
@@ -360,6 +393,7 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 		logger.L().Info("image runner references uploaded",
 			zap.String("task_id", opt.TaskID), zap.Int("count", len(refs)))
 	}
+	referenceFileIDs := buildReferenceFileIDSet(refs)
 
 	// 注意:新会话不要本地生成 conversation_id,上游会 404。
 	// 真正的 conv_id 由 SSE 的 resume_conversation_token / sseResult.ConversationID 返回。
@@ -417,6 +451,8 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 		convID = sseResult.ConversationID
 		result.ConversationID = convID
 	}
+	filteredSSEFileIDs, skippedSSERefs := filterReferenceFileIDs(sseResult.FileIDs, referenceFileIDs)
+	sseResult.FileIDs = filteredSSEFileIDs
 
 	logger.L().Info("image runner SSE parsed",
 		zap.String("task_id", opt.TaskID),
@@ -426,6 +462,7 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 		zap.String("image_gen_task_id", sseResult.ImageGenTaskID),
 		zap.Int("sse_fids", len(sseResult.FileIDs)),
 		zap.Strings("sse_fids_list", sseResult.FileIDs),
+		zap.Int("sse_skipped_reference_fids", skippedSSERefs),
 		zap.Int("sse_sids", len(sseResult.SedimentIDs)),
 		zap.Strings("sse_sids_list", sseResult.SedimentIDs),
 	)
@@ -451,10 +488,13 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 		// 单轮新会话,不需要 baseline:conversation 里出现的每条 image_gen tool 消息
 		// 都是本次请求的产物。
 		pollOpt := chatgpt.PollOpts{
-			ExpectedN: opt.N,
-			MaxWait:   opt.PollMaxWait,
+			IgnoreFileIDs: referenceFileIDs,
+			ExpectedN:     opt.N,
+			MaxWait:       opt.PollMaxWait,
 		}
 		status, fids, sids := cli.PollConversationForImages(ctx, convID, pollOpt)
+		filteredPollFileIDs, skippedPollRefs := filterReferenceFileIDs(fids, referenceFileIDs)
+		fids = filteredPollFileIDs
 		logger.L().Info("image runner poll done",
 			zap.String("task_id", opt.TaskID),
 			zap.Uint64("account_id", lease.Account.ID),
@@ -462,6 +502,7 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 			zap.String("poll_status", string(status)),
 			zap.Int("poll_fids", len(fids)),
 			zap.Strings("poll_fids_list", fids),
+			zap.Int("poll_skipped_reference_fids", skippedPollRefs),
 			zap.Int("poll_sids", len(sids)),
 			zap.Strings("poll_sids_list", sids),
 		)

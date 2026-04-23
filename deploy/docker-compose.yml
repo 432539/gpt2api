@@ -49,7 +49,7 @@ services:
       dockerfile: deploy/Dockerfile
     image: gpt2api/server:latest
     container_name: gpt2api-server
-    restart: unless-stopped
+    restart: "no"
     depends_on:
       mysql:
         condition: service_healthy

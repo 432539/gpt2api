@@ -206,7 +206,7 @@ flowchart LR
 | **git** | 任意 | 克隆仓库 |
 
 > Windows 用户装 Go + Node + Docker Desktop 即可;Linux 服务器一条 `apt install -y golang-go nodejs npm docker.io docker-compose-plugin` 基本够用。  
-> 打包机与运行机**不必是同一台**,`build-local.sh/ps1` 默认交叉编译成 `linux/amd64`,产出拷到服务器上也能直接 `docker compose build` 起。
+> 打包机与运行机**不必是同一台**,`build-local.sh/ps1` 默认按当前宿主机编译成 `linux/<host arch>`,也支持显式指定 `TARGETARCH=amd64|arm64` / `-Arch amd64|arm64`。
 
 **运行环境需要**:
 
@@ -226,8 +226,8 @@ cd gpt2api
 
 | 产物 | 路径 | 由谁产出 |
 |------|------|---------|
-| 后端二进制(linux/amd64) | `deploy/bin/gpt2api` | `go build ./cmd/server` |
-| 迁移工具(linux/amd64) | `deploy/bin/goose` | `go build github.com/pressly/goose/v3/cmd/goose@v3.20.0` |
+| 后端二进制(linux/<target arch>) | `deploy/bin/gpt2api` | `go build ./cmd/server` |
+| 迁移工具(linux/<target arch>) | `deploy/bin/goose` | `go build github.com/pressly/goose/v3/cmd/goose@v3.20.0` |
 | 前端产物 | `web/dist/` | `cd web && npm install && npm run build` |
 
 仓库已经把**这三步打包到一个脚本**,一条命令搞定:
@@ -236,6 +236,8 @@ cd gpt2api
 
 ```bash
 bash deploy/build-local.sh
+TARGETARCH=arm64 bash deploy/build-local.sh
+TARGETARCH=amd64 bash deploy/build-local.sh
 # 增量:只编译缺失的 goose。第一次会自动 npm install(首次慢,之后秒级)
 # 强制重编译 goose:bash deploy/build-local.sh --force
 ```
@@ -244,6 +246,7 @@ bash deploy/build-local.sh
 
 ```powershell
 powershell -NoProfile -File deploy\build-local.ps1
+powershell -NoProfile -File deploy\build-local.ps1 -Arch arm64
 # 强制重编译 goose:powershell -NoProfile -File deploy\build-local.ps1 -Force
 ```
 
@@ -262,6 +265,7 @@ powershell -NoProfile -File deploy\build-local.ps1
 ### 4. 配置 `.env` 与启动容器
 
 ```bash
+cp configs/config.example.yaml configs/config.yaml
 cd deploy
 cp .env.example .env
 ```

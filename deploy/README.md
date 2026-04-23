@@ -13,8 +13,8 @@
 
 | 产物 | 路径 |
 |------|------|
-| 后端(linux/amd64) | `deploy/bin/gpt2api` |
-| 迁移工具(linux/amd64) | `deploy/bin/goose` |
+| 后端(linux/<target arch>) | `deploy/bin/gpt2api` |
+| 迁移工具(linux/<target arch>) | `deploy/bin/goose` |
 | 前端 Vite 产物 | `web/dist/` |
 
 所以**第一次部署 / 代码更新后,都要先在宿主机跑一次预编译脚本**,再 `docker compose build server`。
@@ -31,14 +31,17 @@
 
 ### 1. 预编译(必做一次)
 
-一条命令搞定后端 + goose + 前端三个产物:
+一条命令搞定后端 + goose + 前端三个产物。默认目标架构跟随当前宿主机,也可显式指定:
 
 ```bash
 # Linux / macOS / WSL
 bash deploy/build-local.sh
+TARGETARCH=arm64 bash deploy/build-local.sh
+TARGETARCH=amd64 bash deploy/build-local.sh
 
 # Windows PowerShell
 powershell -NoProfile -File deploy\build-local.ps1
+powershell -NoProfile -File deploy\build-local.ps1 -Arch arm64
 ```
 
 结束后检查:
@@ -50,12 +53,15 @@ ls -lh deploy/bin/gpt2api deploy/bin/goose web/dist/index.html
 ### 2. 配置与启动
 
 ```bash
+cp configs/config.example.yaml configs/config.yaml
 cd deploy
 cp .env.example .env           # 修改 JWT_SECRET / CRYPTO_AES_KEY / MySQL 密码
 docker compose build server    # 把刚才的产物 COPY 进镜像
 docker compose up -d
 docker compose logs -f server  # 观察迁移 + 启动日志
 ```
+
+`server` 启动前会检查 `configs/config.yaml`。如果缺失,容器会打印提示后退出,不会循环重启。
 
 > **⚠️ 没有默认账号 / 密码。** 启动完成后打开 `http://<服务器IP>:8080/register` 注册,
 > **第一个注册的账号自动成为 admin**;之后的注册都是普通用户。建议首位 admin 登录后去
@@ -151,4 +157,3 @@ docker compose exec server mysqldump -hmysql -ugpt2api -p \
 - `server` 可直接 `docker compose up -d --scale server=3`(需前面加 nginx/traefik)
 - `backups` 卷改成共享存储(NFS / S3 fuse),否则每个副本只能看到自己创建的备份
 - Redis 分布式锁已天然支持多副本,MySQL 和 JWT 密钥需统一
-

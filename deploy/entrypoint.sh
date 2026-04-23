@@ -20,8 +20,24 @@ MYSQL_PORT=${MYSQL_PORT:-3306}
 MYSQL_USER=${MYSQL_USER:-gpt2api}
 MYSQL_PASSWORD=${MYSQL_PASSWORD:-gpt2api}
 MYSQL_DATABASE=${MYSQL_DATABASE:-gpt2api}
+CONFIG_PATH=${GPT2API_CONFIG_PATH:-/app/configs/config.yaml}
+CONFIG_EXAMPLE_PATH=${GPT2API_CONFIG_EXAMPLE_PATH:-/app/configs/config.example.yaml}
 
 log() { echo "[entrypoint] $*"; }
+
+check_config() {
+  if [[ -f "${CONFIG_PATH}" ]]; then
+    return 0
+  fi
+  log "missing config file: ${CONFIG_PATH}"
+  if [[ -f "${CONFIG_EXAMPLE_PATH}" ]]; then
+    log "create it first, e.g. on host: cp configs/config.example.yaml configs/config.yaml"
+    log "then restart with: docker compose up -d server"
+  else
+    log "config example also not found: ${CONFIG_EXAMPLE_PATH}"
+  fi
+  exit 1
+}
 
 wait_mysql() {
   log "waiting for mysql ${MYSQL_HOST}:${MYSQL_PORT}..."
@@ -50,6 +66,7 @@ run_migrate() {
   log "migrations done."
 }
 
+check_config
 wait_mysql || true
 run_migrate || { log "migration failed"; exit 1; }
 
