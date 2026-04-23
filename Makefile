@@ -1,4 +1,4 @@
-.PHONY: help run build tidy test fmt vet lint migrate-up migrate-down migrate-status docker-up docker-down docker-logs
+.PHONY: help run build tidy test fmt vet lint migrate-up migrate-down migrate-status docker-up docker-down docker-logs deploy
 
 SHELL := /bin/sh
 APP_NAME := gpt2api
@@ -21,6 +21,7 @@ help:
 	@echo "  docker-up        - docker compose up -d"
 	@echo "  docker-down      - docker compose down"
 	@echo "  docker-logs      - docker compose logs -f"
+	@echo "  deploy           - unified initial deploy/update flow"
 
 run:
 	go run ./cmd/server
@@ -58,3 +59,6 @@ docker-down:
 
 docker-logs:
 	docker compose -f deploy/docker-compose.yml logs -f
+
+deploy:
+	bash deploy/deploy.sh

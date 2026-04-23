@@ -259,10 +259,23 @@ powershell -NoProfile -File deploy\build-local.ps1 -Arch arm64
 -rw-r--r-- ... web/dist/index.html
 ```
 
+> 现在也可以直接用统一部署脚本: `bash deploy/deploy.sh`。它会自动处理首次部署缺失的 `.env` / `config.yaml`、`git pull`、本地编译、`docker compose build` 和 `up -d`。
 > 改完后端代码后**只需重跑 `build-local` 再 `docker compose build server`**;改前端只跑 `npm run build` + `docker compose build server` 即可。  
 > 有同事反馈 `go get` / `npm install` 慢,可以先 `go env -w GOPROXY=https://goproxy.cn,direct` 和 `npm config set registry https://registry.npmmirror.com`。
 
 ### 4. 配置 `.env` 与启动容器
+
+最省事的一条命令:
+
+```bash
+bash deploy/deploy.sh
+```
+
+如果需要指定对外访问地址:
+
+```bash
+bash deploy/deploy.sh --base-url https://api.example.com
+```
 
 ```bash
 cp configs/config.example.yaml configs/config.yaml
@@ -350,6 +363,7 @@ docker compose logs -f server
 | `redis` | `addr`, `pool_size` | Redis,生产推荐 pool=500(锁 / 限流 / 令牌桶) |
 | `jwt` | `secret`, `*_ttl_sec` | **生产必须覆盖** `secret` |
 | `crypto` | `aes_key` | **生产必须覆盖**,32 字节 hex,用于加密账号 AT / cookies |
+| `image_store` | `dir` | 生图原图本地落盘目录,默认 `data/images` |
 | `scheduler` | `min_interval_sec` | **单账号最小间隔秒**,对抗风控核心参数 |
 | `scheduler` | `daily_usage_ratio` | 单号日消耗熔断阈值(0~1,0.6 = 消耗超过日额度 60% 自动下线) |
 | `scheduler` | `cooldown_429_sec` | 连续 429 冷却时间 |

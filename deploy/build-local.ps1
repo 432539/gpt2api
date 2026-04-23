@@ -86,9 +86,25 @@ if ($needGooseBuild) {
 Write-Host "[build-local] step3 = npm run build (web)"
 Push-Location (Join-Path $root "web")
 try {
-    if (-not (Test-Path node_modules)) {
-        npm install --no-audit --no-fund --loglevel=error
-        if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
+    $needNodeInstall = -not (Test-Path node_modules)
+    if (-not $needNodeInstall) {
+        $nodeModulesTime = (Get-Item node_modules).LastWriteTimeUtc
+        if ((Get-Item package.json).LastWriteTimeUtc -gt $nodeModulesTime) {
+            $needNodeInstall = $true
+        } elseif ((Test-Path package-lock.json) -and (Get-Item package-lock.json).LastWriteTimeUtc -gt $nodeModulesTime) {
+            $needNodeInstall = $true
+        }
+    }
+    if ($needNodeInstall) {
+        if (Test-Path package-lock.json) {
+            Write-Host "[build-local] step3a = npm ci (deps changed or node_modules missing)"
+            npm ci --no-audit --no-fund --loglevel=error
+            if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
+        } else {
+            Write-Host "[build-local] step3a = npm install (node_modules missing)"
+            npm install --no-audit --no-fund --loglevel=error
+            if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
+        }
     }
     npm run build
     if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }

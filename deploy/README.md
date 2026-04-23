@@ -18,6 +18,18 @@
 | 前端 Vite 产物 | `web/dist/` |
 
 所以**第一次部署 / 代码更新后,都要先在宿主机跑一次预编译脚本**,再 `docker compose build server`。
+现在仓库已经内置统一部署脚本,可以把这些步骤合成一条命令:
+
+```bash
+bash deploy/deploy.sh
+```
+
+它同时覆盖:
+
+- **首次部署**:自动创建 `deploy/.env` 和 `configs/config.yaml`
+- **后续更新**:自动 `git pull --ff-only`、重编译、重建 `server`、拉起 compose
+
+执行过程中会实时打印步骤、构建输出和错误信息。它**不会执行** `docker compose down -v`,所以数据库、Redis、备份、图片本地存储都不会丢。
 
 ## 快速开始
 
@@ -29,7 +41,26 @@
 > `go env -w GOPROXY=https://goproxy.cn,direct`  
 > `npm config set registry https://registry.npmmirror.com`
 
-### 1. 预编译(必做一次)
+### 1. 最省事的方式(推荐)
+
+```bash
+bash deploy/deploy.sh
+```
+
+常用参数:
+
+```bash
+# 已经手动 git pull 过,只做本地构建 + docker 更新
+bash deploy/deploy.sh --no-pull
+
+# 首次部署时顺手把 app.base_url 写进 configs/config.yaml
+bash deploy/deploy.sh --base-url https://api.example.com
+
+# 指定目标架构
+bash deploy/deploy.sh --arch arm64
+```
+
+### 2. 手动分步方式(需要时再用)
 
 一条命令搞定后端 + goose + 前端三个产物。默认目标架构跟随当前宿主机,也可显式指定:
 
@@ -50,7 +81,7 @@ powershell -NoProfile -File deploy\build-local.ps1 -Arch arm64
 ls -lh deploy/bin/gpt2api deploy/bin/goose web/dist/index.html
 ```
 
-### 2. 配置与启动
+### 3. 配置与启动
 
 ```bash
 cp configs/config.example.yaml configs/config.yaml
@@ -67,13 +98,37 @@ docker compose logs -f server  # 观察迁移 + 启动日志
 > **第一个注册的账号自动成为 admin**;之后的注册都是普通用户。建议首位 admin 登录后去
 > **管理后台 → 系统设置**关闭"允许开放注册"。详见仓库根 `README.md`「5. 首次登录」。
 
-### 3. 日常更新
+### 4. 日常更新
+
+推荐直接用一条命令:
+
+```bash
+bash deploy/deploy.sh
+# 或
+make deploy
+```
+
+常用参数:
+
+```bash
+# 代码已经手动 git pull 过了
+bash deploy/deploy.sh --no-pull
+
+# 指定目标架构
+bash deploy/deploy.sh --arch arm64
+
+# 强制重编 goose
+bash deploy/deploy.sh --force-goose
+
+# 跳过启动后的健康检查
+bash deploy/deploy.sh --skip-healthcheck
+```
 
 | 场景 | 做什么 |
 |------|--------|
 | 只改了前端 | `cd web && npm run build` → `cd ../deploy && docker compose build server && docker compose up -d server` |
 | 只改了后端 | `bash deploy/build-local.sh` → `cd deploy && docker compose build server && docker compose up -d server` |
-| `git pull` 新版 | `bash deploy/build-local.sh` → `docker compose build server && docker compose up -d server` |
+| `git pull` 新版 | `bash deploy/deploy.sh` |
 | 只改了 `.env` | `docker compose up -d`(环境变量变化 compose 会自动感知并重建容器) |
 | 想秒重启 | `docker compose restart server` |
 
@@ -92,6 +147,7 @@ docker compose logs -f server  # 观察迁移 + 启动日志
 - `mysql_data`:MySQL 物理数据
 - `redis_data`:Redis AOF
 - `backups`:`/app/data/backups` —— 数据库备份文件(.sql.gz)落盘目录
+- `images`:`/app/data/images` —— 生图原图本地落盘目录
 - `./logs`:宿主机 `deploy/logs` —— server 日志
 
 数据库备份和宿主机数据是两条独立路径:

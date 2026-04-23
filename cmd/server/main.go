@@ -143,11 +143,14 @@ func main() {
 
 	imageDAO := image.NewDAO(sqldb)
 	imageRunner := image.NewRunner(sched, imageDAO)
+	imageStore := image.NewLocalStore(cfg.ImageStore.Dir)
 	imageRunner.SetQuotaDecrementor(accDAO) // 生图成功后立即扣减账号额度
+	imageRunner.SetLocalStore(imageStore)
 	imagesH := &gateway.ImagesHandler{
-		Handler: gwH,
-		Runner:  imageRunner,
-		DAO:     imageDAO,
+		Handler:    gwH,
+		Runner:     imageRunner,
+		DAO:        imageDAO,
+		LocalStore: imageStore,
 	}
 	gwH.Images = imagesH // chat/completions 识别到图像模型时转派
 

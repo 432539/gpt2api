@@ -101,8 +101,14 @@ fi
 # ---- step3: 前端 ----
 echo "[build-local] step3 = npm run build (web)"
 pushd web >/dev/null
-if [ ! -d node_modules ]; then
-    npm install --no-audit --no-fund --loglevel=error
+if [ ! -d node_modules ] || [ package-lock.json -nt node_modules ] || [ package.json -nt node_modules ]; then
+    if [ -f package-lock.json ]; then
+        echo "[build-local] step3a = npm ci (deps changed or node_modules missing)"
+        npm ci --no-audit --no-fund --loglevel=error
+    else
+        echo "[build-local] step3a = npm install (node_modules missing)"
+        npm install --no-audit --no-fund --loglevel=error
+    fi
 fi
 npm run build
 popd >/dev/null

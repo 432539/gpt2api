@@ -32,6 +32,7 @@ type QuotaDecrementor interface {
 type Runner struct {
 	sched     *scheduler.Scheduler
 	dao       *DAO
+	store     *LocalStore
 	quotaDecr QuotaDecrementor // 生图成功后立即扣减账号额度(可空,空时跳过)
 }
 
@@ -42,6 +43,9 @@ func NewRunner(sched *scheduler.Scheduler, dao *DAO) *Runner {
 
 // SetQuotaDecrementor 注入额度扣减器。
 func (r *Runner) SetQuotaDecrementor(qd QuotaDecrementor) { r.quotaDecr = qd }
+
+// SetLocalStore 注入本地图片仓库。Runner 会在远端成功后把原图字节落盘。
+func (r *Runner) SetLocalStore(store *LocalStore) { r.store = store }
 
 // ReferenceImage 是图生图/编辑的一张参考图输入。
 // 只需要提供原始字节 + 可选的文件名,Runner 会在运行时调用 chatgpt Client 上传。
@@ -568,7 +572,36 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 	result.FileIDs = fileRefs
 	result.SignedURLs = signedURLs
 	result.ContentTypes = contentTypes
+	r.archiveSignedImages(ctx, opt.TaskID, cli, signedURLs)
 	return true, "", nil
+}
+
+func (r *Runner) archiveSignedImages(ctx context.Context, taskID string, cli *chatgpt.Client, signedURLs []string) {
+	if r.store == nil || taskID == "" || cli == nil || len(signedURLs) == 0 {
+		return
+	}
+	for idx, rawURL := range signedURLs {
+		fetchCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		body, _, err := cli.FetchImage(fetchCtx, rawURL, 16*1024*1024)
+		cancel()
+		if err != nil {
+			logger.L().Warn("image runner archive fetch failed",
+				zap.String("task_id", taskID),
+				zap.Int("idx", idx),
+				zap.Error(err))
+			continue
+		}
+		if _, err := r.store.Save(taskID, idx, body); err != nil {
+			logger.L().Warn("image runner archive save failed",
+				zap.String("task_id", taskID),
+				zap.Int("idx", idx),
+				zap.Error(err))
+			continue
+		}
+		logger.L().Info("image runner archived local image",
+			zap.String("task_id", taskID),
+			zap.Int("idx", idx))
+	}
 }
 
 // classifyUpstream 把上游错误转成内部 error code。

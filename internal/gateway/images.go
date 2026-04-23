@@ -43,8 +43,9 @@ type chatMsg = chatgpt.ChatMessage
 //	GET  /v1/images/tasks/:id         查询历史任务(按 task_id)
 type ImagesHandler struct {
 	*Handler
-	Runner *image.Runner
-	DAO    *image.DAO
+	Runner     *image.Runner
+	DAO        *image.DAO
+	LocalStore *image.LocalStore
 	// ImageAccResolver 可选:代理下载上游图片时用于解出账号 AT/cookies/proxy。
 	// 未注入时 /p/img 路径会返回 503。
 	ImageAccResolver ImageAccountResolver
@@ -304,7 +305,7 @@ func (h *ImagesHandler) ImageGenerations(c *gin.Context) {
 		Data:    make([]ImageGenData, 0, len(res.SignedURLs)),
 	}
 	for i := range res.SignedURLs {
-		d := ImageGenData{URL: BuildImageProxyURL(taskID, i, ImageProxyTTL)}
+		d := ImageGenData{URL: image.BuildImageProxyURL(taskID, i, image.ImageProxyTTL)}
 		if i < len(res.FileIDs) {
 			d.FileID = strings.TrimPrefix(res.FileIDs[i], "sed:")
 		}
@@ -343,11 +344,11 @@ func (h *ImagesHandler) ImageTask(c *gin.Context) {
 		return
 	}
 
-	urls := t.DecodeResultURLs()
+	urls := t.DisplayImageURLs(image.ImageProxyTTL)
 	data := make([]ImageGenData, 0, len(urls))
 	fileIDs := t.DecodeFileIDs()
 	for i := range urls {
-		d := ImageGenData{URL: BuildImageProxyURL(t.TaskID, i, ImageProxyTTL)}
+		d := ImageGenData{URL: urls[i]}
 		if i < len(fileIDs) {
 			d.FileID = strings.TrimPrefix(fileIDs[i], "sed:")
 		}
@@ -355,14 +356,14 @@ func (h *ImagesHandler) ImageTask(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"task_id":          t.TaskID,
-		"status":           t.Status,
-		"conversation_id":  t.ConversationID,
-		"created":          t.CreatedAt.Unix(),
-		"finished_at":      nullableUnix(t.FinishedAt),
-		"error":            t.Error,
-		"credit_cost":      t.CreditCost,
-		"data":             data,
+		"task_id":         t.TaskID,
+		"status":          t.Status,
+		"conversation_id": t.ConversationID,
+		"created":         t.CreatedAt.Unix(),
+		"finished_at":     nullableUnix(t.FinishedAt),
+		"error":           t.Error,
+		"credit_cost":     t.CreditCost,
+		"data":            data,
 	})
 }
 
@@ -496,7 +497,7 @@ func (h *ImagesHandler) handleChatAsImage(c *gin.Context, rec *usage.Log, ak *ap
 		if i > 0 {
 			sb.WriteString("\n\n")
 		}
-		sb.WriteString(fmt.Sprintf("![generated](%s)", BuildImageProxyURL(taskID, i, ImageProxyTTL)))
+		sb.WriteString(fmt.Sprintf("![generated](%s)", image.BuildImageProxyURL(taskID, i, image.ImageProxyTTL)))
 	}
 	resp := ChatCompletionResponse{
 		ID:      "chatcmpl-" + uuid.NewString(),
@@ -811,7 +812,7 @@ func (h *ImagesHandler) ImageEdits(c *gin.Context) {
 		Data:    make([]ImageGenData, 0, len(res.SignedURLs)),
 	}
 	for i := range res.SignedURLs {
-		d := ImageGenData{URL: BuildImageProxyURL(taskID, i, ImageProxyTTL)}
+		d := ImageGenData{URL: image.BuildImageProxyURL(taskID, i, image.ImageProxyTTL)}
 		if i < len(res.FileIDs) {
 			d.FileID = strings.TrimPrefix(res.FileIDs[i], "sed:")
 		}

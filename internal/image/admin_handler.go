@@ -55,7 +55,7 @@ func (h *AdminHandler) List(c *gin.Context) {
 	for _, r := range rows {
 		out = append(out, rowOut{
 			AdminTaskRow:     r,
-			ResultURLsParsed: r.DecodeResultURLs(),
+			ResultURLsParsed: r.DisplayImageURLs(ImageProxyTTL),
 		})
 	}
 

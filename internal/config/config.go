@@ -9,18 +9,19 @@ import (
 )
 
 type Config struct {
-	App       AppConfig       `mapstructure:"app"`
-	Log       LogConfig       `mapstructure:"log"`
-	MySQL     MySQLConfig     `mapstructure:"mysql"`
-	Redis     RedisConfig     `mapstructure:"redis"`
-	JWT       JWTConfig       `mapstructure:"jwt"`
-	Crypto    CryptoConfig    `mapstructure:"crypto"`
-	Security  SecurityConfig  `mapstructure:"security"`
-	Scheduler SchedulerConfig `mapstructure:"scheduler"`
-	Upstream  UpstreamConfig  `mapstructure:"upstream"`
-	EPay      EPayConfig      `mapstructure:"epay"`
-	Backup    BackupConfig    `mapstructure:"backup"`
-	SMTP      SMTPConfig      `mapstructure:"smtp"`
+	App        AppConfig        `mapstructure:"app"`
+	Log        LogConfig        `mapstructure:"log"`
+	MySQL      MySQLConfig      `mapstructure:"mysql"`
+	Redis      RedisConfig      `mapstructure:"redis"`
+	JWT        JWTConfig        `mapstructure:"jwt"`
+	Crypto     CryptoConfig     `mapstructure:"crypto"`
+	ImageStore ImageStoreConfig `mapstructure:"image_store"`
+	Security   SecurityConfig   `mapstructure:"security"`
+	Scheduler  SchedulerConfig  `mapstructure:"scheduler"`
+	Upstream   UpstreamConfig   `mapstructure:"upstream"`
+	EPay       EPayConfig       `mapstructure:"epay"`
+	Backup     BackupConfig     `mapstructure:"backup"`
+	SMTP       SMTPConfig       `mapstructure:"smtp"`
 }
 
 type AppConfig struct {
@@ -61,6 +62,10 @@ type CryptoConfig struct {
 	AESKey string `mapstructure:"aes_key"`
 }
 
+type ImageStoreConfig struct {
+	Dir string `mapstructure:"dir"`
+}
+
 type SecurityConfig struct {
 	BcryptCost  int      `mapstructure:"bcrypt_cost"`
 	CORSOrigins []string `mapstructure:"cors_origins"`
@@ -75,19 +80,19 @@ type SchedulerConfig struct {
 }
 
 type UpstreamConfig struct {
-	BaseURL            string `mapstructure:"base_url"`
-	RequestTimeoutSec  int    `mapstructure:"request_timeout_sec"`
-	SSEReadTimeoutSec  int    `mapstructure:"sse_read_timeout_sec"`
+	BaseURL           string `mapstructure:"base_url"`
+	RequestTimeoutSec int    `mapstructure:"request_timeout_sec"`
+	SSEReadTimeoutSec int    `mapstructure:"sse_read_timeout_sec"`
 }
 
 // BackupConfig 数据库备份配置。
 type BackupConfig struct {
-	Dir           string `mapstructure:"dir"`            // 备份落盘目录,默认 /app/data/backups
-	Retention     int    `mapstructure:"retention"`      // 保留最近 N 个(>0),0 表示不自动清理
-	MysqldumpBin  string `mapstructure:"mysqldump_bin"`  // 默认 mysqldump
-	MysqlBin      string `mapstructure:"mysql_bin"`      // 恢复用,默认 mysql
-	MaxUploadMB   int    `mapstructure:"max_upload_mb"`  // 上传 .sql.gz 上限,默认 512
-	AllowRestore  bool   `mapstructure:"allow_restore"`  // 是否允许 /restore 端点(生产强烈建议 false 手动切)
+	Dir          string `mapstructure:"dir"`           // 备份落盘目录,默认 /app/data/backups
+	Retention    int    `mapstructure:"retention"`     // 保留最近 N 个(>0),0 表示不自动清理
+	MysqldumpBin string `mapstructure:"mysqldump_bin"` // 默认 mysqldump
+	MysqlBin     string `mapstructure:"mysql_bin"`     // 恢复用,默认 mysql
+	MaxUploadMB  int    `mapstructure:"max_upload_mb"` // 上传 .sql.gz 上限,默认 512
+	AllowRestore bool   `mapstructure:"allow_restore"` // 是否允许 /restore 端点(生产强烈建议 false 手动切)
 }
 
 type EPayConfig struct {

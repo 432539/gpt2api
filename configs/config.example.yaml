@@ -33,6 +33,9 @@ crypto:
   # 32 字节 hex(64 字符),用于 AES-256-GCM 加密账号 AT / cookies
   aes_key: "CHANGE_ME_TO_64_HEX_CHARS_AES_256_KEY_000000000000000000000000"
 
+image_store:
+  dir: "data/images"
+
 security:
   bcrypt_cost: 10
   cors_origins:
