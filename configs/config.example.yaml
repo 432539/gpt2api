@@ -2,7 +2,7 @@ app:
   name: gpt2api
   env: dev              # dev | prod
   listen: ":8080"
-  base_url: "http://localhost:8080"
+  base_url: "http://localhost:8081"
 
 log:
   level: info           # debug | info | warn | error

@@ -73,7 +73,7 @@ services:
       GPT2API_JWT_SECRET: ${JWT_SECRET:-dev_secret_change_me_in_production_please_32b}
       GPT2API_CRYPTO_AES_KEY: ${CRYPTO_AES_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
     ports:
-      - "${HTTP_PORT:-8080}:8080"
+      - "${HTTP_PORT:-8081}:8080"
     # 给容器指定独立公共 DNS,避免宿主 Clash/V2Ray 等梯子劫持了
     # 代理供应商(如 *.arxlabs.io / *.luminati.io 等)的域名解析,
     # 同时 chatgpt.com 也由外部 DNS 统一解析,确保路径一致。

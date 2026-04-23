@@ -12,6 +12,7 @@ CONFIG_FILE="configs/config.yaml"
 CONFIG_EXAMPLE_FILE="configs/config.example.yaml"
 SERVER_CONTAINER="gpt2api-server"
 MYSQL_VOLUME="deploy_mysql_data"
+COMPOSE_PROJECT_DIR="$(cd "$(dirname "$COMPOSE_FILE")" && pwd)"
 
 DO_PULL=1
 FORCE_GOOSE=0
@@ -131,6 +132,117 @@ require_cmd() {
   fi
 }
 
+get_env_value() {
+  local file="$1"
+  local key="$2"
+  local fallback="$3"
+  local value=""
+  if [[ -f "$file" ]]; then
+    value="$(awk -F= -v want="$key" '
+      $1 == want {
+        v = substr($0, index($0, "=") + 1)
+        gsub(/\r/, "", v)
+        print v
+      }
+    ' "$file" | tail -n1)"
+  fi
+  if [[ -n "$value" ]]; then
+    printf '%s' "$value"
+    return
+  fi
+  printf '%s' "$fallback"
+}
+
+compose_project_name() {
+  if [[ -n "${COMPOSE_PROJECT_NAME:-}" ]]; then
+    printf '%s' "$COMPOSE_PROJECT_NAME"
+    return
+  fi
+  get_env_value "$ENV_FILE" "COMPOSE_PROJECT_NAME" "$(basename "$COMPOSE_PROJECT_DIR")"
+}
+
+host_port_process_info() {
+  local port="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnp "( sport = :${port} )" 2>/dev/null | sed '/^State/d' || true
+    return
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"${port}" -sTCP:LISTEN 2>/dev/null | sed 1d || true
+    return
+  fi
+}
+
+check_port_conflict() {
+  local service="$1"
+  local port="$2"
+  local label="$3"
+  local project
+  local conflict=0
+  local saw_same_service=0
+  local container_ids
+  project="$(compose_project_name)"
+  container_ids="$(docker ps -q --filter "publish=${port}")"
+
+  if [[ -n "$container_ids" ]]; then
+    local id
+    for id in $container_ids; do
+      local name c_project c_service
+      name="$(docker inspect -f '{{.Name}}' "$id" 2>/dev/null | sed 's#^/##')"
+      c_project="$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' "$id" 2>/dev/null || true)"
+      c_service="$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.service" }}' "$id" 2>/dev/null || true)"
+      if [[ "$c_project" == "$project" && "$c_service" == "$service" ]]; then
+        saw_same_service=1
+        continue
+      fi
+      if [[ "$conflict" == "0" ]]; then
+        warn "${label} host port ${port} is already used by another container:"
+      fi
+      printf '  - container=%s project=%s service=%s\n' "${name:-unknown}" "${c_project:-<none>}" "${c_service:-<none>}" >&2
+      conflict=1
+    done
+  fi
+
+  if [[ "$conflict" == "1" ]]; then
+    warn "fix it by changing ${label} port in ${ENV_FILE} or stopping/removing the conflicting container"
+    return 1
+  fi
+
+  if [[ "$saw_same_service" == "1" ]]; then
+    log "${label} host port ${port} is currently held by existing ${service} container of the same compose project; compose will replace it"
+    return 0
+  fi
+
+  local proc_info
+  proc_info="$(host_port_process_info "$port")"
+  if [[ -n "$proc_info" ]]; then
+    warn "${label} host port ${port} is already listened by a host process:"
+    printf '%s\n' "$proc_info" >&2
+    warn "fix it by changing ${label} port in ${ENV_FILE} or stopping the process above"
+    return 1
+  fi
+
+  log "${label} host port ${port} is available"
+}
+
+preflight_ports() {
+  local http_port mysql_port redis_port
+  local failed=0
+  http_port="$(get_env_value "$ENV_FILE" "HTTP_PORT" "8081")"
+  mysql_port="$(get_env_value "$ENV_FILE" "MYSQL_PORT" "3306")"
+  redis_port="$(get_env_value "$ENV_FILE" "REDIS_PORT" "6379")"
+
+  log "port plan: server=${http_port}, mysql=${mysql_port}, redis=${redis_port}"
+
+  check_port_conflict "server" "$http_port" "server" || failed=1
+  check_port_conflict "mysql" "$mysql_port" "mysql" || failed=1
+  check_port_conflict "redis" "$redis_port" "redis" || failed=1
+
+  if [[ "$failed" == "1" ]]; then
+    die "host port preflight failed"
+  fi
+}
+
 set_env_value() {
   local file="$1"
   local key="$2"
@@ -240,8 +352,8 @@ ensure_clean_tree_for_pull() {
   local dirty
   dirty="$(git status --porcelain --untracked-files=no)"
   if [[ -n "$dirty" ]]; then
-    printf '[deploy][ERR] working tree has tracked changes, refuse to git pull:\n%s\n' "$dirty" >&2
-    printf '[deploy][ERR] commit/stash/revert them first, or rerun with --no-pull.\n' >&2
+    printf '[%s][deploy][ERR] working tree has tracked changes, refuse to git pull:\n%s\n' "$(timestamp)" "$dirty" >&2
+    printf '[%s][deploy][ERR] commit/stash/revert them first, or rerun with --no-pull.\n' "$(timestamp)" >&2
     exit 1
   fi
 }
@@ -326,7 +438,7 @@ wait_for_server() {
 }
 
 print_summary() {
-  local http_port="8080"
+  local http_port="8081"
   if [[ -f "$ENV_FILE" ]]; then
     local parsed
     parsed="$(awk -F= '$1=="HTTP_PORT"{print $2}' "$ENV_FILE" | tail -n1)"
@@ -425,6 +537,10 @@ step_done
 
 step "synchronize git repository"
 maybe_git_pull
+step_done
+
+step "preflight host ports"
+preflight_ports
 step_done
 
 step "build local artifacts"
