@@ -433,7 +433,12 @@ func ExtractImageToolMsgs(mapping map[string]interface{}) []ImageToolMsg {
 		if s, _ := author["role"].(string); s != "tool" {
 			continue
 		}
-		if s, _ := meta["async_task_type"].(string); s != "image_gen" {
+		// Match: old format (async_task_type=image_gen), new final (image_gen_title),
+		// or new preview (async_source without image_gen_title).
+		asyncType, _ := meta["async_task_type"].(string)
+		imgTitle, _ := meta["image_gen_title"].(string)
+		asyncSrc, _ := meta["async_source"].(string)
+		if asyncType != "image_gen" && imgTitle == "" && asyncSrc == "" {
 			continue
 		}
 		if s, _ := content["content_type"].(string); s != "multimodal_text" {
@@ -525,7 +530,7 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 		opt.MaxWait = 300 * time.Second
 	}
 	if opt.Interval <= 0 {
-		opt.Interval = 3 * time.Second
+		opt.Interval = 15 * time.Second
 	}
 	baseline := opt.BaselineToolIDs
 
@@ -551,7 +556,7 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 		if err != nil {
 			if ue, ok := err.(*UpstreamError); ok && ue.Status == 429 {
 				consecutive429++
-				if consecutive429 >= 3 {
+				if consecutive429 >= 10 {
 					return PollStatusError, nil, nil
 				}
 				sleep(ctx, 10*time.Second)

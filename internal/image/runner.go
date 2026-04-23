@@ -23,13 +23,14 @@ import (
 // IMG2 已正式上线,不再做"灰度命中判定 / preview_only 换账号重试"这些节流操作,
 // 拿到任意 file-service / sediment 引用即算成功,以速度和效率优先。
 type Runner struct {
-	sched *scheduler.Scheduler
-	dao   *DAO
+	sched   *scheduler.Scheduler
+	dao     *DAO
+	solver  chatgpt.TurnstileSolver
 }
 
 // NewRunner 构造 Runner。
-func NewRunner(sched *scheduler.Scheduler, dao *DAO) *Runner {
-	return &Runner{sched: sched, dao: dao}
+func NewRunner(sched *scheduler.Scheduler, dao *DAO, solver chatgpt.TurnstileSolver) *Runner {
+	return &Runner{sched: sched, dao: dao, solver: solver}
 }
 
 // ReferenceImage 是图生图/编辑的一张参考图输入。
@@ -77,10 +78,10 @@ func (r *Runner) Run(ctx context.Context, opt RunOptions) *RunResult {
 		opt.MaxAttempts = 1
 	}
 	if opt.PerAttemptTimeout <= 0 {
-		opt.PerAttemptTimeout = 6 * time.Minute
+		opt.PerAttemptTimeout = 10 * time.Minute
 	}
 	if opt.PollMaxWait <= 0 {
-		opt.PollMaxWait = 300 * time.Second
+		opt.PollMaxWait = 480 * time.Second
 	}
 	if opt.UpstreamModel == "" {
 		// 对齐浏览器抓包 + 参考实现:图像走 f/conversation 时 model 字段和
@@ -173,11 +174,12 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 
 	// 2) 构造上游 client
 	cli, err := chatgpt.New(chatgpt.Options{
-		AuthToken: lease.AuthToken,
-		DeviceID:  lease.DeviceID,
-		SessionID: lease.SessionID,
-		ProxyURL:  lease.ProxyURL,
-		Cookies:   "", // 目前不从 oai_account_cookies 加载,后续 M3+ 再做
+		AuthToken:       lease.AuthToken,
+		DeviceID:        lease.DeviceID,
+		SessionID:       lease.SessionID,
+		ProxyURL:        lease.ProxyURL,
+		Cookies:         "", // 目前不从 oai_account_cookies 加载,后续 M3+ 再做
+		TurnstileSolver: r.solver,
 	})
 	if err != nil {
 		return false, ErrUnknown, fmt.Errorf("chatgpt client: %w", err)

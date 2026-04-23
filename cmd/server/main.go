@@ -21,7 +21,8 @@ import (
 	"github.com/432539/gpt2api/internal/config"
 	"github.com/432539/gpt2api/internal/db"
 	"github.com/432539/gpt2api/internal/gateway"
-	"github.com/432539/gpt2api/internal/image"
+	"	"github.com/432539/gpt2api/internal/image"
+	"github.com/432539/gpt2api/internal/upstream/chatgpt""
 	modelpkg "github.com/432539/gpt2api/internal/model"
 	"github.com/432539/gpt2api/internal/proxy"
 	gwratelimit "github.com/432539/gpt2api/internal/ratelimit"
@@ -142,7 +143,13 @@ func main() {
 	}
 
 	imageDAO := image.NewDAO(sqldb)
-	imageRunner := image.NewRunner(sched, imageDAO)
+	// Turnstile solver (optional): set upstream.turnstile_solver_url in config.yaml
+	var turnstileSolver chatgpt.TurnstileSolver
+	if cfg.Upstream.TurnstileSolverURL != "" {
+		turnstileSolver = chatgpt.NewHTTPTurnstileSolver(cfg.Upstream.TurnstileSolverURL)
+		log.Info("turnstile solver enabled", zap.String("url", cfg.Upstream.TurnstileSolverURL))
+	}
+	imageRunner := image.NewRunner(sched, imageDAO, turnstileSolver)
 	imagesH := &gateway.ImagesHandler{
 		Handler: gwH,
 		Runner:  imageRunner,
