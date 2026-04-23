@@ -346,6 +346,7 @@ func truncatePrefix(s string, n int) string {
 type ChatRequirementsPrepareResp struct {
 	Persona      string `json:"persona"`
 	PrepareToken string `json:"prepare_token"`
+	PToken       string `json:"-"` // local: the p_value / requirements_token used in prepare request
 	Turnstile    struct {
 		Required bool   `json:"required"`
 		DX       string `json:"dx"`
@@ -384,6 +385,7 @@ func (c *Client) ChatRequirementsPrepare(ctx context.Context) (*ChatRequirements
 	if err := json.Unmarshal(buf, &out); err != nil {
 		return nil, fmt.Errorf("decode chat-requirements/prepare: %w", err)
 	}
+	out.PToken = reqToken
 	return &out, nil
 }
 
@@ -476,7 +478,7 @@ func (c *Client) ChatRequirementsV2(ctx context.Context) (*ChatRequirementsResp,
 		if c.opts.TurnstileSolver != nil {
 			sCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
-			out, solveErr := c.opts.TurnstileSolver.Solve(sCtx, prep.Turnstile.DX)
+			out, solveErr := c.opts.TurnstileSolver.Solve(sCtx, prep.Turnstile.DX, prep.PToken)
 			if solveErr != nil || out == "" {
 				if logger := loggerL(); logger != nil {
 					logger.Warn("turnstile solver failed, fallback to single-step chat-requirements",

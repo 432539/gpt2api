@@ -41,7 +41,7 @@ import (
 // 没有 solver 时,Client.ChatRequirementsV2 会自动回退到老的单步
 // chat-requirements 流程(Turnstile=true 直接忽略)。
 type TurnstileSolver interface {
-	Solve(ctx context.Context, dx string) (string, error)
+	Solve(ctx context.Context, dx string, token string) (string, error)
 }
 
 const (

@@ -78,6 +78,7 @@ type UpstreamConfig struct {
 	BaseURL            string `mapstructure:"base_url"`
 	RequestTimeoutSec  int    `mapstructure:"request_timeout_sec"`
 	SSEReadTimeoutSec  int    `mapstructure:"sse_read_timeout_sec"`
+	TurnstileSolverURL string `mapstructure:"turnstile_solver_url"`
 }
 
 // BackupConfig 数据库备份配置。
