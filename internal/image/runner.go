@@ -71,6 +71,7 @@ type RunOptions struct {
 	PerAttemptTimeout time.Duration    // 单次尝试总超时,默认 6min(覆盖 SSE + PollMaxWait + 缓冲)
 	PollMaxWait       time.Duration    // SSE 没直出时,轮询 conversation 的最长等待,默认 300s
 	References        []ReferenceImage // 图生图/编辑:参考图
+	CaptureBodies     bool             // 并发聚合时抓取原图字节,由外层统一落本地
 }
 
 // RunResult 是单次生图的输出。
@@ -81,6 +82,7 @@ type RunResult struct {
 	FileIDs        []string // chatgpt.com 侧的原始 ref("sed:" 前缀表示 sediment)
 	SignedURLs     []string // 直接可访问的签名 URL(15 分钟有效)
 	ContentTypes   []string
+	Bodies         [][]byte
 	ErrorCode      string
 	ErrorMessage   string
 	Attempts       int // 跨账号尝试次数(runOnce 次数)
@@ -225,9 +227,11 @@ func (r *Runner) runWithRetry(ctx context.Context, opt RunOptions, result *RunRe
 // 各 goroutine 不写 DAO(TaskID 置空),写库由外层 Run 统一完成。
 func (r *Runner) runParallel(ctx context.Context, opt RunOptions, start time.Time, result *RunResult) {
 	type subResult struct {
+		slot       int
 		ok         bool
 		fileIDs    []string
 		signedURLs []string
+		bodies     [][]byte
 		convID     string
 		accountID  uint64
 		errCode    string
@@ -237,15 +241,17 @@ func (r *Runner) runParallel(ctx context.Context, opt RunOptions, start time.Tim
 	n := opt.N
 	ch := make(chan subResult, n)
 
-	// 子任务:单张、不写 DAO
-	subOpt := opt
-	subOpt.N = 1
-	subOpt.TaskID = "" // 禁用 DAO,避免多 goroutine 互相覆盖
+	subResults := make([]subResult, n)
 
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
 		wg.Add(1)
-		go func() {
+		subOpt := opt
+		subOpt.N = 1
+		subOpt.TaskID = "" // 禁用 DAO,避免多 goroutine 互相覆盖
+		subOpt.CaptureBodies = true
+		slot := i
+		go func(slot int, subOpt RunOptions) {
 			defer wg.Done()
 			sub := &RunResult{Status: StatusFailed, ErrorCode: ErrUnknown}
 			r.runWithRetry(ctx, subOpt, sub)
@@ -254,15 +260,17 @@ func (r *Runner) runParallel(ctx context.Context, opt RunOptions, start time.Tim
 				msg = sub.ErrorMessage
 			}
 			ch <- subResult{
+				slot:       slot,
 				ok:         sub.Status == StatusSuccess,
 				fileIDs:    sub.FileIDs,
 				signedURLs: sub.SignedURLs,
+				bodies:     sub.Bodies,
 				convID:     sub.ConversationID,
 				accountID:  sub.AccountID,
 				errCode:    sub.ErrorCode,
 				errMsg:     msg,
 			}
-		}()
+		}(slot, subOpt)
 	}
 
 	// 等待全部完成后关闭 channel
@@ -274,10 +282,14 @@ func (r *Runner) runParallel(ctx context.Context, opt RunOptions, start time.Tim
 		lastErrMsg   string
 	)
 	for sr := range ch {
+		subResults[sr.slot] = sr
+	}
+	for _, sr := range subResults {
 		if sr.ok {
 			successCount++
 			result.FileIDs = append(result.FileIDs, sr.fileIDs...)
 			result.SignedURLs = append(result.SignedURLs, sr.signedURLs...)
+			result.Bodies = append(result.Bodies, sr.bodies...)
 			if result.ConversationID == "" {
 				result.ConversationID = sr.convID
 			}
@@ -295,6 +307,7 @@ func (r *Runner) runParallel(ctx context.Context, opt RunOptions, start time.Tim
 		result.Status = StatusSuccess
 		result.ErrorCode = ""
 		result.ErrorMessage = ""
+		r.saveCapturedBodies(opt.TaskID, result.Bodies)
 		logger.L().Info("image runner parallel done",
 			zap.String("task_id", opt.TaskID),
 			zap.Int("requested", n),
@@ -587,6 +600,25 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 		return false, ErrDownload, errors.New("all download urls failed")
 	}
 
+	var bodies [][]byte
+	if opt.CaptureBodies {
+		bodies = make([][]byte, 0, len(signedURLs))
+		for idx, rawURL := range signedURLs {
+			fetchCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+			body, _, err := cli.FetchImage(fetchCtx, rawURL, 16*1024*1024)
+			cancel()
+			if err != nil {
+				logger.L().Warn("image runner capture body failed",
+					zap.String("task_id", opt.TaskID),
+					zap.Int("idx", idx),
+					zap.Error(err))
+				bodies = append(bodies, nil)
+				continue
+			}
+			bodies = append(bodies, body)
+		}
+	}
+
 	logger.L().Info("image runner result summary",
 		zap.String("task_id", opt.TaskID),
 		zap.Uint64("account_id", lease.Account.ID),
@@ -599,14 +631,41 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 	result.FileIDs = fileRefs
 	result.SignedURLs = signedURLs
 	result.ContentTypes = contentTypes
+	result.Bodies = bodies
 	if reservedQuota {
 		if actualCount := len(signedURLs); actualCount > 0 && actualCount < reservedCount {
 			_ = r.quotaMgr.ReleaseImageQuota(context.Background(), lease.Account.ID, reservedCount-actualCount)
 		}
 		reservedQuota = false
 	}
-	r.archiveSignedImages(ctx, opt.TaskID, cli, signedURLs)
+	if !opt.CaptureBodies {
+		r.archiveSignedImages(ctx, opt.TaskID, cli, signedURLs)
+	}
 	return true, "", nil
+}
+
+func (r *Runner) saveCapturedBodies(taskID string, bodies [][]byte) {
+	if r.store == nil || taskID == "" || len(bodies) == 0 {
+		return
+	}
+	for idx, body := range bodies {
+		if len(body) == 0 {
+			logger.L().Warn("image runner captured body empty",
+				zap.String("task_id", taskID),
+				zap.Int("idx", idx))
+			continue
+		}
+		if _, err := r.store.Save(taskID, idx, body); err != nil {
+			logger.L().Warn("image runner save captured body failed",
+				zap.String("task_id", taskID),
+				zap.Int("idx", idx),
+				zap.Error(err))
+			continue
+		}
+		logger.L().Info("image runner saved captured body",
+			zap.String("task_id", taskID),
+			zap.Int("idx", idx))
+	}
 }
 
 func (r *Runner) archiveSignedImages(ctx context.Context, taskID string, cli *chatgpt.Client, signedURLs []string) {

@@ -110,6 +110,13 @@ func (h *ImagesHandler) ImageProxy(c *gin.Context) {
 	if !ok {
 		fids := t.DecodeFileIDs()
 		if idx >= len(fids) || t.AccountID == 0 || h.ImageAccResolver == nil {
+			logger.L().Warn("image proxy unavailable",
+				zap.String("task_id", taskID),
+				zap.Int("idx", idx),
+				zap.Int("file_ids", len(fids)),
+				zap.Int("result_urls", len(t.DecodeResultURLs())),
+				zap.Uint64("account_id", t.AccountID),
+				zap.Bool("resolver_nil", h.ImageAccResolver == nil))
 			c.AbortWithStatus(http.StatusServiceUnavailable)
 			return
 		}
