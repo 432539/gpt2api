@@ -138,6 +138,7 @@ export interface ImageTask {
   error?: string
   credit_cost: number
   image_urls: string[]
+  thumb_urls?: string[]
   file_ids?: string[]
   created_at: string
   started_at?: string | null

@@ -35,54 +35,123 @@ func (s *LocalStore) Save(taskID string, idx int, data []byte) (string, error) {
 	if len(data) == 0 {
 		return "", errors.New("empty image data")
 	}
-	path, err := s.filePath(taskID, idx)
+	path, err := s.filePath(taskID, idx, ImageVariantOriginal)
 	if err != nil {
 		return "", err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", err
 	}
-	tmp := fmt.Sprintf("%s.tmp-%d", path, os.Getpid())
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := writeFileAtomic(path, data); err != nil {
 		return "", err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return "", err
-	}
+	_ = s.saveThumb(taskID, idx, data)
 	return path, nil
 }
 
 // Load 读取单张图片。返回 (bytes, contentType)。
 func (s *LocalStore) Load(taskID string, idx int) ([]byte, string, error) {
-	path, err := s.filePath(taskID, idx)
+	return s.LoadVariant(taskID, idx, ImageVariantOriginal)
+}
+
+// LoadVariant 读取指定变体。thumb 不存在时会尝试从原图即时生成并回写本地缓存。
+func (s *LocalStore) LoadVariant(taskID string, idx int, variant string) ([]byte, string, error) {
+	variant = NormalizeImageVariant(variant)
+	path, err := s.filePath(taskID, idx, variant)
 	if err != nil {
 		return nil, "", err
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			if variant == ImageVariantThumb {
+				return s.buildThumbFromOriginal(taskID, idx)
+			}
 			return nil, "", ErrLocalImageNotFound
 		}
 		return nil, "", err
 	}
-	ct := "application/octet-stream"
-	if len(data) > 0 {
-		n := len(data)
-		if n > 512 {
-			n = 512
-		}
-		ct = http.DetectContentType(data[:n])
-	}
-	return data, ct, nil
+	return data, detectContentType(data), nil
 }
 
-func (s *LocalStore) filePath(taskID string, idx int) (string, error) {
+func (s *LocalStore) saveThumb(taskID string, idx int, original []byte) error {
+	thumb, _, err := DoThumbnail(original)
+	if err != nil {
+		return err
+	}
+	path, err := s.filePath(taskID, idx, ImageVariantThumb)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return writeFileAtomic(path, thumb)
+}
+
+func (s *LocalStore) buildThumbFromOriginal(taskID string, idx int) ([]byte, string, error) {
+	origPath, err := s.filePath(taskID, idx, ImageVariantOriginal)
+	if err != nil {
+		return nil, "", err
+	}
+	original, err := os.ReadFile(origPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, "", ErrLocalImageNotFound
+		}
+		return nil, "", err
+	}
+	thumb, ct, err := DoThumbnail(original)
+	if err != nil {
+		return nil, "", err
+	}
+	path, err := s.filePath(taskID, idx, ImageVariantThumb)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, "", err
+	}
+	if err := writeFileAtomic(path, thumb); err != nil {
+		return nil, "", err
+	}
+	return thumb, ct, nil
+}
+
+func writeFileAtomic(path string, data []byte) error {
+	tmp := fmt.Sprintf("%s.tmp-%d", path, os.Getpid())
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+func detectContentType(data []byte) string {
+	ct := "application/octet-stream"
+	if len(data) == 0 {
+		return ct
+	}
+	n := len(data)
+	if n > 512 {
+		n = 512
+	}
+	return http.DetectContentType(data[:n])
+}
+
+func (s *LocalStore) filePath(taskID string, idx int, variant string) (string, error) {
 	if idx < 0 {
 		return "", fmt.Errorf("invalid image index: %d", idx)
 	}
 	if err := validateTaskID(taskID); err != nil {
 		return "", err
+	}
+	variant = NormalizeImageVariant(variant)
+	if variant == ImageVariantThumb {
+		return filepath.Join(s.dir, taskID, fmt.Sprintf("%d.thumb.bin", idx)), nil
 	}
 	return filepath.Join(s.dir, taskID, fmt.Sprintf("%d.bin", idx)), nil
 }

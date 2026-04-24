@@ -50,12 +50,14 @@ func (h *AdminHandler) List(c *gin.Context) {
 	type rowOut struct {
 		AdminTaskRow
 		ResultURLsParsed []string `json:"result_urls_parsed"`
+		ThumbURLsParsed  []string `json:"thumb_urls_parsed"`
 	}
 	out := make([]rowOut, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, rowOut{
 			AdminTaskRow:     r,
 			ResultURLsParsed: r.DisplayImageURLs(ImageProxyTTL),
+			ThumbURLsParsed:  r.DisplayThumbURLs(ImageProxyTTL),
 		})
 	}
 

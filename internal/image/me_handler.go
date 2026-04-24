@@ -36,6 +36,7 @@ type taskView struct {
 	Error          string     `json:"error,omitempty"`
 	CreditCost     int64      `json:"credit_cost"`
 	ImageURLs      []string   `json:"image_urls"`
+	ThumbURLs      []string   `json:"thumb_urls"`
 	FileIDs        []string   `json:"file_ids,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
 	StartedAt      *time.Time `json:"started_at,omitempty"`
@@ -44,6 +45,7 @@ type taskView struct {
 
 func toView(t *Task) taskView {
 	urls := t.DisplayImageURLs(ImageProxyTTL)
+	thumbs := t.DisplayThumbURLs(ImageProxyTTL)
 	fids := t.DecodeFileIDs()
 	for i, id := range fids {
 		fids[i] = strings.TrimPrefix(id, "sed:")
@@ -53,7 +55,7 @@ func toView(t *Task) taskView {
 		AccountID: t.AccountID, Prompt: t.Prompt, N: t.N, Size: t.Size,
 		Upscale: t.Upscale,
 		Status:  t.Status, ConversationID: t.ConversationID, Error: t.Error,
-		CreditCost: t.CreditCost, ImageURLs: urls, FileIDs: fids,
+		CreditCost: t.CreditCost, ImageURLs: urls, ThumbURLs: thumbs, FileIDs: fids,
 		CreatedAt: t.CreatedAt, StartedAt: t.StartedAt, FinishedAt: t.FinishedAt,
 	}
 }

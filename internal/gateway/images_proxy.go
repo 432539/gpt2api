@@ -58,6 +58,7 @@ func (h *ImagesHandler) ImageProxy(c *gin.Context) {
 	idxStr := c.Param("idx")
 	expStr := c.Query("exp")
 	sig := c.Query("sig")
+	variant := image.NormalizeImageVariant(c.Query("variant"))
 
 	if taskID == "" || idxStr == "" || expStr == "" || sig == "" {
 		c.AbortWithStatus(http.StatusBadRequest)
@@ -73,7 +74,7 @@ func (h *ImagesHandler) ImageProxy(c *gin.Context) {
 		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
-	if !image.VerifyImageProxySig(taskID, idx, expMs, sig) {
+	if !image.VerifyImageProxySig(taskID, idx, expMs, sig, variant) {
 		c.AbortWithStatus(http.StatusForbidden)
 		return
 	}
@@ -92,9 +93,12 @@ func (h *ImagesHandler) ImageProxy(c *gin.Context) {
 		return
 	}
 
-	// 按需放大:若 task 上打了 upscale 标记,先走进程内 LRU,命中则直接返回。
-	// 未命中再拉原图,放大成 PNG 后写入缓存。
-	scale := image.ValidateUpscale(t.Upscale)
+	// thumb 仅用于列表缩略图,永远基于原图缓存返回,不参与 2K/4K 放大链路。
+	// 原图访问仍保留原有 upscale 行为。
+	scale := image.UpscaleNone
+	if variant == image.ImageVariantOriginal {
+		scale = image.ValidateUpscale(t.Upscale)
+	}
 	cacheKey := ""
 	if scale != "" {
 		cacheKey = fmt.Sprintf("%s|%d|%s", taskID, idx, scale)
@@ -106,7 +110,7 @@ func (h *ImagesHandler) ImageProxy(c *gin.Context) {
 		}
 	}
 
-	body, ct, ok := h.loadLocalImage(taskID, idx)
+	body, ct, ok := h.loadLocalImage(taskID, idx, variant)
 	if !ok {
 		fids := t.DecodeFileIDs()
 		if idx >= len(fids) || t.AccountID == 0 || h.ImageAccResolver == nil {
@@ -167,9 +171,29 @@ func (h *ImagesHandler) ImageProxy(c *gin.Context) {
 					zap.Error(err), zap.String("task_id", taskID), zap.Int("idx", idx))
 			}
 		}
+		if variant == image.ImageVariantThumb {
+			if thumbBody, thumbCT, ok := h.loadLocalImage(taskID, idx, variant); ok {
+				body, ct = thumbBody, thumbCT
+			} else {
+				thumbBody, thumbCT, err := image.DoThumbnail(body)
+				if err != nil {
+					logger.L().Warn("image proxy thumb",
+						zap.Error(err), zap.String("task_id", taskID), zap.Int("idx", idx))
+				} else {
+					body, ct = thumbBody, thumbCT
+				}
+			}
+		}
 	}
 	if ct == "" {
 		ct = "image/png"
+	}
+
+	if variant == image.ImageVariantThumb {
+		c.Header("Cache-Control", "private, max-age=86400")
+		c.Header("X-Image-Variant", variant)
+		c.Data(http.StatusOK, ct, body)
+		return
 	}
 
 	if scale != "" {
@@ -207,17 +231,18 @@ func (h *ImagesHandler) ImageProxy(c *gin.Context) {
 	c.Data(http.StatusOK, ct, body)
 }
 
-func (h *ImagesHandler) loadLocalImage(taskID string, idx int) ([]byte, string, bool) {
+func (h *ImagesHandler) loadLocalImage(taskID string, idx int, variant string) ([]byte, string, bool) {
 	if h.LocalStore == nil {
 		return nil, "", false
 	}
-	body, ct, err := h.LocalStore.Load(taskID, idx)
+	body, ct, err := h.LocalStore.LoadVariant(taskID, idx, variant)
 	if err == nil {
 		return body, ct, true
 	}
 	if !errors.Is(err, image.ErrLocalImageNotFound) {
 		logger.L().Warn("image proxy local load",
-			zap.Error(err), zap.String("task_id", taskID), zap.Int("idx", idx))
+			zap.Error(err), zap.String("task_id", taskID), zap.Int("idx", idx),
+			zap.String("variant", image.NormalizeImageVariant(variant)))
 	}
 	return nil, "", false
 }

@@ -2,6 +2,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { http } from '@/api/http'
 import { formatDateTime } from '@/utils/format'
+import ImagePreviewDialog from '@/components/ImagePreviewDialog.vue'
 
 interface TaskRow {
   id: number
@@ -14,6 +15,7 @@ interface TaskRow {
   upscale: string
   status: string
   result_urls_parsed: string[]
+  thumb_urls_parsed?: string[]
   error: string
   credit_cost: number
   estimated_credit: number
@@ -63,9 +65,22 @@ function onReset() {
 // 弹窗预览图片
 const previewDlg = ref(false)
 const previewRow = ref<TaskRow | null>(null)
+const previewIndex = ref(0)
 function openPreview(row: TaskRow) {
   previewRow.value = row
+  previewIndex.value = 0
   previewDlg.value = true
+}
+
+function openPreviewAt(row: TaskRow, idx: number) {
+  previewRow.value = row
+  previewIndex.value = idx
+  previewDlg.value = true
+}
+
+function rowThumbs(row: TaskRow) {
+  if (row.thumb_urls_parsed?.length) return row.thumb_urls_parsed
+  return row.result_urls_parsed || []
 }
 
 const statusColor: Record<string, 'success' | 'danger' | 'warning' | 'info' | 'primary'> = {
@@ -123,13 +138,20 @@ onMounted(fetchList)
             <el-tag :type="statusColor[row.status] || 'info'" size="small">{{ row.status }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="结果" width="80">
+        <el-table-column label="结果" width="120">
           <template #default="{ row }">
-            <el-button
-              v-if="row.result_urls_parsed?.length"
-              type="primary" link size="small"
-              @click="openPreview(row)"
-            >预览({{ row.result_urls_parsed.length }})</el-button>
+            <div v-if="row.result_urls_parsed?.length" class="result-cell">
+              <img
+                v-if="rowThumbs(row)[0]"
+                :src="rowThumbs(row)[0]"
+                :alt="row.task_id"
+                class="result-thumb"
+                @click="openPreviewAt(row, 0)"
+              />
+              <el-button type="primary" link size="small" @click="openPreview(row)">
+                预览({{ row.result_urls_parsed.length }})
+              </el-button>
+            </div>
             <span v-else-if="row.error" style="font-size:11px;color:var(--el-color-danger)" :title="row.error">失败</span>
             <span v-else style="color:var(--el-text-color-secondary)">-</span>
           </template>
@@ -160,34 +182,32 @@ onMounted(fetchList)
       />
     </div>
 
-    <!-- 图片预览弹窗 -->
-    <el-dialog v-model="previewDlg" title="生成结果预览" width="680px">
-      <div v-if="previewRow">
-        <div style="font-size:13px;color:var(--el-text-color-secondary);margin-bottom:10px;word-break:break-all">
-          {{ previewRow.prompt }}
-        </div>
-        <div style="display:flex;flex-wrap:wrap;gap:8px">
-          <a
-            v-for="(url, idx) in previewRow.result_urls_parsed"
-            :key="idx"
-            :href="url"
-            target="_blank"
-            style="display:block"
-          >
-            <el-image
-              :src="url"
-              :preview-src-list="previewRow.result_urls_parsed"
-              :initial-index="idx"
-              fit="cover"
-              style="width:200px;height:200px;border-radius:4px"
-              lazy
-            />
-          </a>
-        </div>
-        <div v-if="previewRow.error" style="margin-top:12px;color:var(--el-color-danger);font-size:12px;word-break:break-all">
-          错误:{{ previewRow.error }}
-        </div>
-      </div>
-    </el-dialog>
+    <ImagePreviewDialog
+      v-model="previewDlg"
+      :title="previewRow ? `任务 ${previewRow.task_id}` : '生成结果预览'"
+      :description="previewRow?.prompt || ''"
+      :urls="previewRow?.result_urls_parsed || []"
+      :thumb-urls="previewRow ? rowThumbs(previewRow) : []"
+      :initial-index="previewIndex"
+    />
   </div>
 </template>
+
+<style scoped lang="scss">
+.result-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.result-thumb {
+  width: 42px;
+  height: 42px;
+  display: block;
+  border-radius: 8px;
+  object-fit: cover;
+  background: var(--el-fill-color-lighter);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+</style>

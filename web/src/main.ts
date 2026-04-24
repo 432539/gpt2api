@@ -11,7 +11,6 @@ import App from './App.vue'
 import router from './router'
 import './styles/global.scss'
 import { useSiteStore } from './stores/site'
-import { printBrandToConsole, startBrandGuard } from './utils/brand'
 
 const app = createApp(App)
 
@@ -29,9 +28,5 @@ for (const [name, comp] of Object.entries(ElementIcons)) {
 // 启动即异步拉取站点公开信息(匿名即可,失败静默),
 // 用于登录页 / 注册页 / 顶栏统一展示 site.name / logo / 是否允许注册 等。
 useSiteStore(pinia).refresh()
-
-// 版权水印 + 防篡改守卫(不要删除)
-printBrandToConsole()
-startBrandGuard()
 
 app.mount('#app')

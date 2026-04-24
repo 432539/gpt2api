@@ -104,3 +104,16 @@ func (t *Task) DisplayImageURLs(ttl time.Duration) []string {
 	}
 	return out
 }
+
+// DisplayThumbURLs 为当前任务动态生成一组缩略图 URL。
+func (t *Task) DisplayThumbURLs(ttl time.Duration) []string {
+	count := t.ResultCount()
+	if count <= 0 {
+		return nil
+	}
+	out := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		out = append(out, BuildImageThumbURL(t.TaskID, i, ttl))
+	}
+	return out
+}

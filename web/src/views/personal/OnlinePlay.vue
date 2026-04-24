@@ -4,6 +4,7 @@ import { ElMessage } from 'element-plus'
 import { storeToRefs } from 'pinia'
 import { useUserStore } from '@/stores/user'
 import { formatCredit, formatDateTime } from '@/utils/format'
+import ImagePreviewDialog from '@/components/ImagePreviewDialog.vue'
 import {
   getMyImageTask,
   listMyImageTasks,
@@ -39,13 +40,27 @@ const currentImageDesc = computed(
   () => imageModels.value.find((m) => m.slug === selectedImageModel.value)?.description || '',
 )
 
-const IMAGE_POLL_INTERVAL_MS = 3000
+const IMAGE_TASK_POLL_INTERVAL_MS = 3000
+const RECENT_IMAGE_POLL_INTERVAL_MS = 10_000
 const RECENT_IMAGE_LIMIT = 8
 
 const recentImageTasks = ref<ImageTask[]>([])
 const recentImageTasksLoading = ref(false)
 let recentImageTasksInflight = false
 let recentImageTimer: number | null = null
+let activeImageTaskPollers = 0
+
+type RecentThumbFailure = {
+  url: string
+}
+
+type LoadRecentImageTaskOptions = {
+  silent?: boolean
+  keepTerminalImageURLs?: boolean
+  clearThumbFailures?: boolean
+}
+
+const recentThumbFailures = ref<Record<string, RecentThumbFailure>>({})
 
 function isImageTaskPending(status: string) {
   return status === 'queued' || status === 'dispatched' || status === 'running'
@@ -85,12 +100,90 @@ function clearRecentImageTimer() {
   }
 }
 
+function hasActiveImageTaskPolling() {
+  return activeImageTaskPollers > 0
+}
+
+function beginImageTaskPolling() {
+  activeImageTaskPollers += 1
+  clearRecentImageTimer()
+}
+
+function endImageTaskPolling() {
+  activeImageTaskPollers = Math.max(0, activeImageTaskPollers - 1)
+  scheduleRecentImageRefresh()
+}
+
+function recentThumbKey(taskID: string, idx: number) {
+  return `${taskID}:${idx}`
+}
+
+function isRecentThumbBroken(taskID: string, idx: number, url: string) {
+  const state = recentThumbFailures.value[recentThumbKey(taskID, idx)]
+  return !!state && state.url === url
+}
+
+function markRecentThumbBroken(taskID: string, idx: number, url: string) {
+  const key = recentThumbKey(taskID, idx)
+  if (recentThumbFailures.value[key]?.url === url) return
+  recentThumbFailures.value = {
+    ...recentThumbFailures.value,
+    [key]: { url },
+  }
+}
+
+function clearRecentThumbFailure(taskID: string, idx: number, url?: string) {
+  const key = recentThumbKey(taskID, idx)
+  const state = recentThumbFailures.value[key]
+  if (!state) return
+  if (url && state.url !== url) return
+  const next = { ...recentThumbFailures.value }
+  delete next[key]
+  recentThumbFailures.value = next
+}
+
+function clearAllRecentThumbFailures() {
+  recentThumbFailures.value = {}
+}
+
+function mergeRecentImageTasks(items: ImageTask[], keepTerminalImageURLs: boolean) {
+  if (recentImageTasks.value.length === 0) return items
+  const prevMap = new Map(recentImageTasks.value.map((task) => [task.task_id, task]))
+  return items.map((task) => {
+    const prev = prevMap.get(task.task_id)
+    if (!prev) return task
+    const prevPending = isImageTaskPending(prev.status)
+    const nextPending = isImageTaskPending(task.status)
+    if (!prevPending && !nextPending) {
+      return prev
+    }
+    if (nextPending) {
+      return task
+    }
+    const prevURLs = prev.image_urls || []
+    const nextURLs = task.image_urls || []
+    if (keepTerminalImageURLs && prevURLs.length > 0 && prevURLs.length === nextURLs.length) {
+      const prevThumbs = prev.thumb_urls || []
+      const nextThumbs = task.thumb_urls || []
+      return {
+        ...task,
+        image_urls: prevURLs.slice(),
+        thumb_urls: prevThumbs.length > 0 && prevThumbs.length === nextThumbs.length
+          ? prevThumbs.slice()
+          : nextThumbs,
+      }
+    }
+    return task
+  })
+}
+
 function scheduleRecentImageRefresh() {
   clearRecentImageTimer()
+  if (hasActiveImageTaskPolling()) return
   if (!recentImageTasks.value.some((task) => isImageTaskPending(task.status))) return
   recentImageTimer = window.setTimeout(() => {
-    loadRecentImageTasks(true).catch(() => {})
-  }, IMAGE_POLL_INTERVAL_MS)
+    loadRecentImageTasks({ silent: true }).catch(() => {})
+  }, RECENT_IMAGE_POLL_INTERVAL_MS)
 }
 
 function upsertRecentImageTask(task: ImageTask) {
@@ -102,18 +195,54 @@ function upsertRecentImageTask(task: ImageTask) {
   scheduleRecentImageRefresh()
 }
 
-async function loadRecentImageTasks(silent = false) {
+async function loadRecentImageTasks(options: LoadRecentImageTaskOptions = {}) {
+  const {
+    silent = false,
+    keepTerminalImageURLs = true,
+    clearThumbFailures = false,
+  } = options
   if (recentImageTasksInflight) return
+  if (clearThumbFailures) clearAllRecentThumbFailures()
   recentImageTasksInflight = true
   if (!silent) recentImageTasksLoading.value = true
   try {
     const data = await listMyImageTasks({ limit: RECENT_IMAGE_LIMIT, offset: 0 })
-    recentImageTasks.value = data.items
+    recentImageTasks.value = mergeRecentImageTasks(data.items, keepTerminalImageURLs)
   } finally {
     recentImageTasksInflight = false
     if (!silent) recentImageTasksLoading.value = false
     scheduleRecentImageRefresh()
   }
+}
+
+function refreshRecentImageTasks() {
+  return loadRecentImageTasks({
+    keepTerminalImageURLs: false,
+    clearThumbFailures: true,
+  })
+}
+
+function recentTaskThumbs(task: ImageTask) {
+  if (task.thumb_urls?.length) return task.thumb_urls
+  return task.image_urls || []
+}
+
+const recentPreviewVisible = ref(false)
+const recentPreviewTitle = ref('任务图片预览')
+const recentPreviewDesc = ref('')
+const recentPreviewURLs = ref<string[]>([])
+const recentPreviewThumbURLs = ref<string[]>([])
+const recentPreviewIndex = ref(0)
+
+function openRecentTaskPreview(task: ImageTask, idx = 0) {
+  const originals = task.image_urls || []
+  if (originals.length === 0) return
+  recentPreviewTitle.value = `任务 ${task.task_id}`
+  recentPreviewDesc.value = task.prompt || ''
+  recentPreviewURLs.value = originals
+  recentPreviewThumbURLs.value = recentTaskThumbs(task)
+  recentPreviewIndex.value = idx
+  recentPreviewVisible.value = true
 }
 
 onMounted(async () => {
@@ -448,7 +577,7 @@ async function sendText2Img() {
     }
     t2iTaskID.value = resp.task_id
     ElMessage.success('任务已提交，正在后台生成')
-    loadRecentImageTasks(true).catch(() => {})
+    loadRecentImageTasks({ silent: true }).catch(() => {})
     t2iAbort.value = null
     await pollText2ImgTask(resp.task_id)
   } catch (err: unknown) {
@@ -464,35 +593,40 @@ async function sendText2Img() {
 
 async function pollText2ImgTask(taskID: string) {
   const seq = ++t2iPollSeq
-  while (seq === t2iPollSeq) {
-    try {
-      const task = await getMyImageTask(taskID)
-      upsertRecentImageTask(task)
-      if (task.status === 'success') {
-        t2iResult.value = imageTaskToResult(task)
-        t2iError.value = t2iResult.value.length ? '' : '任务已完成，但没有返回可展示的图片'
-        t2iSending.value = false
-        userStore.fetchMe().catch(() => {})
-        if (t2iResult.value.length > 0) {
-          ElMessage.success(`生成成功，共 ${t2iResult.value.length} 张`)
+  beginImageTaskPolling()
+  try {
+    while (seq === t2iPollSeq) {
+      try {
+        const task = await getMyImageTask(taskID)
+        upsertRecentImageTask(task)
+        if (task.status === 'success') {
+          t2iResult.value = imageTaskToResult(task)
+          t2iError.value = t2iResult.value.length ? '' : '任务已完成，但没有返回可展示的图片'
+          t2iSending.value = false
+          userStore.fetchMe().catch(() => {})
+          if (t2iResult.value.length > 0) {
+            ElMessage.success(`生成成功，共 ${t2iResult.value.length} 张`)
+          }
+          return
         }
-        return
-      }
-      if (task.status === 'failed') {
-        t2iError.value = task.error || '图片生成失败'
+        if (task.status === 'failed') {
+          t2iError.value = task.error || '图片生成失败'
+          t2iSending.value = false
+          userStore.fetchMe().catch(() => {})
+          ElMessage.error(t2iError.value)
+          return
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        t2iError.value = `任务已提交，但轮询失败：${msg || 'unknown error'}`
         t2iSending.value = false
-        userStore.fetchMe().catch(() => {})
-        ElMessage.error(t2iError.value)
+        ElMessage.warning('后台任务仍在继续，可在下方最近图片任务中查看结果')
         return
       }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err)
-      t2iError.value = `任务已提交，但轮询失败：${msg || 'unknown error'}`
-      t2iSending.value = false
-      ElMessage.warning('后台任务仍在继续，可在下方最近图片任务中查看结果')
-      return
+      await sleep(IMAGE_TASK_POLL_INTERVAL_MS)
     }
-    await sleep(IMAGE_POLL_INTERVAL_MS)
+  } finally {
+    endImageTaskPolling()
   }
 }
 
@@ -608,7 +742,7 @@ async function sendImg2Img() {
     }
     i2iTaskID.value = resp.task_id
     ElMessage.success('任务已提交，正在后台生成')
-    loadRecentImageTasks(true).catch(() => {})
+    loadRecentImageTasks({ silent: true }).catch(() => {})
     i2iAbort.value = null
     await pollImg2ImgTask(resp.task_id)
   } catch (err: unknown) {
@@ -624,35 +758,40 @@ async function sendImg2Img() {
 
 async function pollImg2ImgTask(taskID: string) {
   const seq = ++i2iPollSeq
-  while (seq === i2iPollSeq) {
-    try {
-      const task = await getMyImageTask(taskID)
-      upsertRecentImageTask(task)
-      if (task.status === 'success') {
-        i2iResult.value = imageTaskToResult(task)
-        i2iError.value = i2iResult.value.length ? '' : '任务已完成，但没有返回可展示的图片'
-        i2iSending.value = false
-        userStore.fetchMe().catch(() => {})
-        if (i2iResult.value.length > 0) {
-          ElMessage.success(`生成成功，共 ${i2iResult.value.length} 张`)
+  beginImageTaskPolling()
+  try {
+    while (seq === i2iPollSeq) {
+      try {
+        const task = await getMyImageTask(taskID)
+        upsertRecentImageTask(task)
+        if (task.status === 'success') {
+          i2iResult.value = imageTaskToResult(task)
+          i2iError.value = i2iResult.value.length ? '' : '任务已完成，但没有返回可展示的图片'
+          i2iSending.value = false
+          userStore.fetchMe().catch(() => {})
+          if (i2iResult.value.length > 0) {
+            ElMessage.success(`生成成功，共 ${i2iResult.value.length} 张`)
+          }
+          return
         }
-        return
-      }
-      if (task.status === 'failed') {
-        i2iError.value = task.error || '图片生成失败'
+        if (task.status === 'failed') {
+          i2iError.value = task.error || '图片生成失败'
+          i2iSending.value = false
+          userStore.fetchMe().catch(() => {})
+          ElMessage.error(i2iError.value)
+          return
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        i2iError.value = `任务已提交，但轮询失败：${msg || 'unknown error'}`
         i2iSending.value = false
-        userStore.fetchMe().catch(() => {})
-        ElMessage.error(i2iError.value)
+        ElMessage.warning('后台任务仍在继续，可在下方最近图片任务中查看结果')
         return
       }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err)
-      i2iError.value = `任务已提交，但轮询失败：${msg || 'unknown error'}`
-      i2iSending.value = false
-      ElMessage.warning('后台任务仍在继续，可在下方最近图片任务中查看结果')
-      return
+      await sleep(IMAGE_TASK_POLL_INTERVAL_MS)
     }
-    await sleep(IMAGE_POLL_INTERVAL_MS)
+  } finally {
+    endImageTaskPolling()
   }
 }
 
@@ -1200,7 +1339,7 @@ onBeforeUnmount(() => {
             离开页面后回来，也可以在这里继续看结果。完整历史仍可在「接口文档」页面查看。
           </div>
         </div>
-        <el-button text @click="loadRecentImageTasks()">刷新</el-button>
+        <el-button text @click="refreshRecentImageTasks()">刷新</el-button>
       </div>
 
       <div v-if="recentImageTasksLoading && recentImageTasks.length === 0" class="recent-empty">
@@ -1224,16 +1363,28 @@ onBeforeUnmount(() => {
           <div class="recent-prompt">{{ task.prompt }}</div>
           <div class="recent-info">{{ task.n }} 张 · {{ task.size }}</div>
 
-          <div v-if="task.image_urls?.length" class="recent-thumb-grid">
-            <img
-              v-for="(url, idx) in task.image_urls.slice(0, 4)"
+          <div v-if="recentTaskThumbs(task).length" class="recent-thumb-grid">
+            <div
+              v-for="(url, idx) in recentTaskThumbs(task).slice(0, 4)"
               :key="`${task.task_id}-${idx}`"
-              :src="url"
-              :alt="`${task.task_id}-${idx}`"
-              class="recent-thumb"
-              loading="lazy"
-              @click="openInNewWindow(url)"
-            />
+              class="recent-thumb-slot"
+              :class="{ 'is-broken': isRecentThumbBroken(task.task_id, idx, url) }"
+            >
+              <img
+                v-if="!isRecentThumbBroken(task.task_id, idx, url)"
+                :src="url"
+                :alt="`${task.task_id}-${idx}`"
+                class="recent-thumb"
+                loading="lazy"
+                @click="openRecentTaskPreview(task, idx)"
+                @error="markRecentThumbBroken(task.task_id, idx, url)"
+                @load="clearRecentThumbFailure(task.task_id, idx, url)"
+              />
+              <div v-else class="recent-thumb-fallback" @click="openRecentTaskPreview(task, idx)">
+                <el-icon><PictureFilled /></el-icon>
+                <span>图片暂不可用</span>
+              </div>
+            </div>
           </div>
           <div v-else class="recent-note">
             {{ task.status === 'failed' ? (task.error || '任务失败') : '后台处理中，可稍后回来查看' }}
@@ -1241,6 +1392,15 @@ onBeforeUnmount(() => {
         </article>
       </div>
     </section>
+
+    <ImagePreviewDialog
+      v-model="recentPreviewVisible"
+      :title="recentPreviewTitle"
+      :description="recentPreviewDesc"
+      :urls="recentPreviewURLs"
+      :thumb-urls="recentPreviewThumbURLs"
+      :initial-index="recentPreviewIndex"
+    />
 
   </div>
 </template>
@@ -1873,15 +2033,46 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
-.recent-thumb {
+.recent-thumb-slot {
   width: 100%;
   aspect-ratio: 1;
-  object-fit: cover;
   border-radius: 10px;
-  cursor: pointer;
+  overflow: hidden;
   background: var(--el-fill-color-lighter);
+}
+
+.recent-thumb-slot.is-broken {
+  border: 1px dashed var(--el-border-color);
+}
+
+.recent-thumb {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  cursor: pointer;
   transition: opacity 0.2s;
   &:hover { opacity: 0.92; }
+}
+
+.recent-thumb-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  text-align: center;
+  line-height: 1.4;
+  cursor: pointer;
+
+  .el-icon {
+    font-size: 18px;
+  }
 }
 
 .recent-note {
