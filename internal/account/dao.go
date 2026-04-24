@@ -118,6 +118,7 @@ func (d *DAO) ListDispatchable(ctx context.Context, limit int) ([]*Account, erro
          WHERE deleted_at IS NULL AND status IN ('healthy', 'warned')
            AND (cooldown_until IS NULL OR cooldown_until <= ?)
            AND (token_expires_at IS NULL OR token_expires_at > ?)
+           AND image_quota_remaining <> 0
          ORDER BY
            CASE status WHEN 'healthy' THEN 0 ELSE 1 END,
            CASE WHEN last_used_at IS NULL THEN 0 ELSE 1 END,
@@ -146,27 +147,45 @@ func (d *DAO) ListNeedRefresh(ctx context.Context, aheadSec int, limit int) ([]*
 }
 
 // ListNeedProbeQuota 返回需要探测图片额度的账号。命中以下任一条件即纳入:
-//   (a) 从未探测过(image_quota_updated_at IS NULL);
-//   (b) 上次探测超过 minIntervalSec 秒(常规轮询);
-//   (c) **剩余额度=0 且已过 reset_at**:这种"归零等重置"的账号要第一时间补探,
-//       不受 minIntervalSec 限制,避免 5 小时轮询间隔导致的额度恢复滞后显示。
+//
+//	(a) healthy: 从未探测过 / 常规轮询到期 / 剩余额度=0 且已过 reset_at;
+//	(b) throttled: 从未探测过 / 常规轮询到期 / cooldown_until 到期 /
+//	    image_quota_reset_at 到期。
+//
+// 这样"因图片额度耗尽而被降为 throttled"的账号可以在重置时间到达后
+// 被及时补探,并在额度恢复时自动回到 healthy。
 func (d *DAO) ListNeedProbeQuota(ctx context.Context, minIntervalSec int, limit int) ([]*Account, error) {
 	rows := make([]*Account, 0, limit)
 	threshold := time.Now().Add(-time.Duration(minIntervalSec) * time.Second)
 	err := d.db.SelectContext(ctx, &rows,
 		`SELECT * FROM oai_accounts
          WHERE deleted_at IS NULL
-           AND status = 'healthy'
+           AND status IN ('healthy', 'throttled')
            AND (token_expires_at IS NULL OR token_expires_at > NOW())
            AND (
-                image_quota_updated_at IS NULL
-             OR image_quota_updated_at <= ?
-             OR (image_quota_remaining = 0
-                 AND (image_quota_reset_at IS NULL OR image_quota_reset_at <= NOW()))
+                (
+                    status = 'healthy'
+                AND (
+                        image_quota_updated_at IS NULL
+                     OR image_quota_updated_at <= ?
+                     OR (image_quota_remaining = 0
+                         AND (image_quota_reset_at IS NULL OR image_quota_reset_at <= NOW()))
+                    )
+                )
+             OR (
+                    status = 'throttled'
+                AND (
+                        image_quota_updated_at IS NULL
+                     OR image_quota_updated_at <= ?
+                     OR (cooldown_until IS NOT NULL AND cooldown_until <= NOW())
+                     OR (image_quota_reset_at IS NOT NULL AND image_quota_reset_at <= NOW())
+                    )
+                )
            )
-         ORDER BY CASE WHEN image_quota_updated_at IS NULL THEN 0 ELSE 1 END,
+         ORDER BY CASE status WHEN 'throttled' THEN 0 ELSE 1 END,
+                  CASE WHEN image_quota_updated_at IS NULL THEN 0 ELSE 1 END,
                   image_quota_updated_at ASC
-         LIMIT ?`, threshold, limit)
+         LIMIT ?`, threshold, threshold, limit)
 	fillAll(rows)
 	return rows, err
 }
@@ -388,6 +407,46 @@ func (d *DAO) ApplyQuotaResult(ctx context.Context, id uint64, remaining, total 
 		reset = nil
 	}
 	_, err := d.db.ExecContext(ctx, q, remaining, remaining, total, total, reset, time.Now(), id)
+	return err
+}
+
+// ReserveImageQuota 为一次图片生成预留本地额度。
+// image_quota_remaining < 0 表示未知,此时允许通过且保持原值不变。
+func (d *DAO) ReserveImageQuota(ctx context.Context, accountID uint64, n int) (bool, error) {
+	if n <= 0 {
+		return true, nil
+	}
+	res, err := d.db.ExecContext(ctx,
+		`UPDATE oai_accounts
+         SET image_quota_remaining = CASE
+               WHEN image_quota_remaining < 0 THEN image_quota_remaining
+               ELSE image_quota_remaining - ?
+             END
+         WHERE id = ? AND deleted_at IS NULL
+           AND (image_quota_remaining < 0 OR image_quota_remaining >= ?)`,
+		n, accountID, n)
+	if err != nil {
+		return false, err
+	}
+	affected, _ := res.RowsAffected()
+	return affected > 0, nil
+}
+
+// ReleaseImageQuota 归还一次失败任务预留的本地额度。
+// 未知额度(image_quota_remaining < 0)保持不变;已知额度会回补,并上限裁到 image_quota_total。
+func (d *DAO) ReleaseImageQuota(ctx context.Context, accountID uint64, n int) error {
+	if n <= 0 {
+		return nil
+	}
+	_, err := d.db.ExecContext(ctx,
+		`UPDATE oai_accounts
+         SET image_quota_remaining = CASE
+               WHEN image_quota_remaining < 0 THEN image_quota_remaining
+               WHEN image_quota_total >= 0 THEN LEAST(image_quota_total, image_quota_remaining + ?)
+               ELSE image_quota_remaining + ?
+             END
+         WHERE id = ? AND deleted_at IS NULL`,
+		n, n, accountID)
 	return err
 }
 

@@ -144,7 +144,7 @@ func main() {
 	imageDAO := image.NewDAO(sqldb)
 	imageRunner := image.NewRunner(sched, imageDAO)
 	imageStore := image.NewLocalStore(cfg.ImageStore.Dir)
-	imageRunner.SetQuotaDecrementor(accDAO) // 生图成功后立即扣减账号额度
+	imageRunner.SetQuotaManager(accDAO) // 生图开始前预留本地额度,失败自动归还
 	imageRunner.SetLocalStore(imageStore)
 	imagesH := &gateway.ImagesHandler{
 		Handler:    gwH,

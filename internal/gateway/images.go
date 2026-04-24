@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -74,7 +75,8 @@ type ImageGenRequest struct {
 	// 算法:golang.org/x/image/draw.CatmullRom(传统插值,不是 AI 超分)。
 	// 生效时机:图片代理 URL 首次请求时做一次 decode+放大+PNG 编码,之后进程内
 	// LRU 缓存命中毫秒级返回。仅影响 /v1/images/proxy/... 的出口字节,不改原图。
-	Upscale string `json:"upscale,omitempty"`
+	Upscale       string `json:"upscale,omitempty"`
+	WaitForResult *bool  `json:"wait_for_result,omitempty"` // 非标准扩展: false=立即返回 task_id,客户端后续自行轮询
 }
 
 // ImageGenData 单张图响应。
@@ -122,48 +124,25 @@ func (h *ImagesHandler) ImageGenerations(c *gin.Context) {
 		req.Size = "1024x1024"
 	}
 	req.Upscale = image.ValidateUpscale(req.Upscale)
-
-	refID := uuid.NewString()
-	rec := &usage.Log{
-		UserID:    ak.UserID,
-		KeyID:     ak.ID,
-		RequestID: refID,
-		Type:      usage.TypeImage,
-		IP:        c.ClientIP(),
-		UA:        c.Request.UserAgent(),
-	}
-	defer func() {
-		rec.DurationMs = int(time.Since(startAt).Milliseconds())
-		if rec.Status == "" {
-			rec.Status = usage.StatusFailed
-		}
-		if h.Usage != nil {
-			h.Usage.Write(rec)
-		}
-	}()
-	fail := func(code string) { rec.Status = usage.StatusFailed; rec.ErrorCode = code }
+	waitForResult := imageShouldWait(req.WaitForResult)
 
 	// 1) 模型白名单
 	if !ak.ModelAllowed(req.Model) {
-		fail("model_not_allowed")
 		openAIError(c, http.StatusForbidden, "model_not_allowed",
 			fmt.Sprintf("当前 API Key 无权调用模型 %q", req.Model))
 		return
 	}
 	m, err := h.Models.BySlug(c.Request.Context(), req.Model)
 	if err != nil || m == nil || !m.Enabled {
-		fail("model_not_found")
 		openAIError(c, http.StatusBadRequest, "model_not_found",
 			fmt.Sprintf("模型 %q 不存在或已下架", req.Model))
 		return
 	}
 	if m.Type != modelpkg.TypeImage {
-		fail("model_type_mismatch")
 		openAIError(c, http.StatusBadRequest, "model_type_mismatch",
 			fmt.Sprintf("模型 %q 不是图像模型,不能用于 /v1/images/generations", req.Model))
 		return
 	}
-	rec.ModelID = m.ID
 
 	// 2) 分组倍率 + RPM 限流(图像不走 TPM)
 	ratio := 1.0
@@ -178,39 +157,37 @@ func (h *ImagesHandler) ImageGenerations(c *gin.Context) {
 	}
 	if h.Limiter != nil {
 		if ok, _, err := h.Limiter.AllowRPM(c.Request.Context(), ak.ID, rpmCap); err == nil && !ok {
-			fail("rate_limit_rpm")
 			openAIError(c, http.StatusTooManyRequests, "rate_limit_rpm",
 				"触发每分钟请求数限制 (RPM),请稍后再试")
 			return
 		}
 	}
 
-	// 3) 预扣(图像按定价,est = actual)
+	// 3) 解析 reference_images(图生图 / 图像编辑入口都走到这里)。
+	// 在创建任务前先做这一步,避免无效参考图留下 dispatched 脏任务。
+	refs, err := decodeReferenceInputs(c.Request.Context(), req.ReferenceImages)
+	if err != nil {
+		openAIError(c, http.StatusBadRequest, "invalid_reference_image", "参考图解析失败:"+err.Error())
+		return
+	}
+
+	refID := uuid.NewString()
+
+	// 4) 预扣(图像按定价,est = actual)
 	cost := billing.ComputeImageCost(m, req.N, ratio)
 	if cost > 0 {
 		if err := h.Billing.PreDeduct(c.Request.Context(), ak.UserID, ak.ID, cost, refID, "image prepay"); err != nil {
 			if errors.Is(err, billing.ErrInsufficient) {
-				fail("insufficient_balance")
 				openAIError(c, http.StatusPaymentRequired, "insufficient_balance",
 					"积分不足,请前往「账单与充值」充值后再试")
 				return
 			}
-			fail("billing_error")
 			openAIError(c, http.StatusInternalServerError, "billing_error", "计费异常:"+err.Error())
 			return
 		}
 	}
-	refunded := false
-	refund := func(code string) {
-		fail(code)
-		if refunded || cost == 0 {
-			return
-		}
-		refunded = true
-		_ = h.Billing.Refund(context.Background(), ak.UserID, ak.ID, cost, refID, "image refund")
-	}
 
-	// 4) 落任务
+	// 5) 落任务
 	taskID := image.GenerateTaskID()
 	task := &image.Task{
 		TaskID:          taskID,
@@ -226,27 +203,11 @@ func (h *ImagesHandler) ImageGenerations(c *gin.Context) {
 	}
 	if h.DAO != nil {
 		if err := h.DAO.Create(c.Request.Context(), task); err != nil {
-			refund("billing_error")
+			_ = h.Billing.Refund(context.Background(), ak.UserID, ak.ID, cost, refID, "image refund")
 			openAIError(c, http.StatusInternalServerError, "internal_error", "创建任务失败:"+err.Error())
 			return
 		}
 	}
-
-	// 4.5) 解析 reference_images(图生图 / 图像编辑入口都走到这里)
-	refs, err := decodeReferenceInputs(c.Request.Context(), req.ReferenceImages)
-	if err != nil {
-		refund("invalid_request_error")
-		openAIError(c, http.StatusBadRequest, "invalid_reference_image", "参考图解析失败:"+err.Error())
-		return
-	}
-
-	// 5) 执行(同步阻塞)
-	//
-	// 单请求硬上限 7 分钟:Runner 默认 per-attempt 6 分钟
-	// (SSE ~60s + PollMaxWait 300s + 缓冲),外层再留 1 分钟
-	// 给账号调度 + 签名 URL 换取等周边耗时。IMG2 已正式上线,不再做 preview_only 重试。
-	runCtx, cancel := context.WithTimeout(c.Request.Context(), 7*time.Minute)
-	defer cancel()
 
 	// 带参考图时,多轮重试没什么意义(反而会重复上传参考图),只留 1 次尝试。
 	maxAttempts := 2
@@ -254,64 +215,45 @@ func (h *ImagesHandler) ImageGenerations(c *gin.Context) {
 		maxAttempts = 1
 	}
 
-	res := h.Runner.Run(runCtx, image.RunOptions{
+	resultCh := h.runImageTaskAsync(imageAsyncRequest{
 		TaskID:        taskID,
-		UserID:        ak.UserID,
-		KeyID:         ak.ID,
-		ModelID:       m.ID,
-		UpstreamModel: m.UpstreamModelSlug,
-		Prompt:        maybeAppendClaritySuffix(req.Prompt),
+		RefID:         refID,
+		APIKey:        ak,
+		Model:         m,
+		Prompt:        req.Prompt,
 		N:             req.N,
+		Ratio:         ratio,
 		MaxAttempts:   maxAttempts,
 		References:    refs,
+		EstimatedCost: cost,
+		BillingAction: "image",
+		StartAt:       startAt,
+		ClientIP:      c.ClientIP(),
+		UserAgent:     c.Request.UserAgent(),
 	})
-	rec.AccountID = res.AccountID
 
-	if res.Status != image.StatusSuccess {
-		refund(ifEmpty(res.ErrorCode, "upstream_error"))
-		httpStatus := http.StatusBadGateway
-		if res.ErrorCode == image.ErrNoAccount {
-			httpStatus = http.StatusServiceUnavailable
-		}
-		if res.ErrorCode == image.ErrRateLimited {
-			httpStatus = http.StatusServiceUnavailable
-		}
-		openAIError(c, httpStatus, ifEmpty(res.ErrorCode, "upstream_error"),
-			localizeImageErr(res.ErrorCode, res.ErrorMessage))
+	if !waitForResult {
+		c.JSON(http.StatusOK, ImageGenResponse{
+			Created: time.Now().Unix(),
+			TaskID:  taskID,
+			Data:    []ImageGenData{},
+		})
 		return
 	}
 
-	// 6) 结算
-	if cost > 0 {
-		if err := h.Billing.Settle(context.Background(), ak.UserID, ak.ID, cost, cost, refID, "image settle"); err != nil {
-			logger.L().Error("billing settle image", zap.Error(err), zap.String("ref", refID))
+	select {
+	case out := <-resultCh:
+		if out.ErrorCode != "" {
+			openAIError(c, out.HTTPStatus, out.ErrorCode, out.ErrorDetail)
+			return
 		}
+		c.JSON(http.StatusOK, out.Response)
+	case <-c.Request.Context().Done():
+		logger.L().Info("image request canceled while waiting, task continues in background",
+			zap.String("task_id", taskID),
+			zap.Uint64("user_id", ak.UserID))
+		return
 	}
-	_ = h.Keys.DAO().TouchUsage(context.Background(), ak.ID, c.ClientIP(), cost)
-
-	// 7) usage
-	rec.Status = usage.StatusSuccess
-	rec.CreditCost = cost
-
-	// 8) DAO 回写 credit_cost(Runner 已经 MarkSuccess,这里只补 credit_cost)
-	if h.DAO != nil {
-		_ = h.DAO.UpdateCost(c.Request.Context(), taskID, cost)
-	}
-
-	// 9) 响应:URL 统一走自家代理,防止 chatgpt.com estuary/content 防盗链
-	out := ImageGenResponse{
-		Created: time.Now().Unix(),
-		TaskID:  taskID,
-		Data:    make([]ImageGenData, 0, len(res.SignedURLs)),
-	}
-	for i := range res.SignedURLs {
-		d := ImageGenData{URL: image.BuildImageProxyURL(taskID, i, image.ImageProxyTTL)}
-		if i < len(res.FileIDs) {
-			d.FileID = strings.TrimPrefix(res.FileIDs[i], "sed:")
-		}
-		out.Data = append(out.Data, d)
-	}
-	c.JSON(http.StatusOK, out)
 }
 
 // ImageTask GET /v1/images/tasks/:id。
@@ -478,17 +420,24 @@ func (h *ImagesHandler) handleChatAsImage(c *gin.Context, rec *usage.Log, ak *ap
 			localizeImageErr(res.ErrorCode, res.ErrorMessage))
 		return
 	}
+	actualCost := billing.ComputeImageCost(m, len(res.SignedURLs), ratio)
 
 	if cost > 0 {
-		_ = h.Billing.Settle(context.Background(), ak.UserID, ak.ID, cost, cost, refID, "chat->image settle")
+		ctx, cancel := imageWriteContext()
+		_ = h.Billing.Settle(ctx, ak.UserID, ak.ID, cost, actualCost, refID, "chat->image settle")
+		cancel()
 	}
-	_ = h.Keys.DAO().TouchUsage(context.Background(), ak.ID, c.ClientIP(), cost)
+	ctx, cancel := imageWriteContext()
+	_ = h.Keys.DAO().TouchUsage(ctx, ak.ID, c.ClientIP(), actualCost)
+	cancel()
 	if h.DAO != nil {
-		_ = h.DAO.UpdateCost(c.Request.Context(), taskID, cost)
+		ctx, cancel := imageWriteContext()
+		_ = h.DAO.UpdateCost(ctx, taskID, actualCost)
+		cancel()
 	}
 
 	rec.Status = usage.StatusSuccess
-	rec.CreditCost = cost
+	rec.CreditCost = actualCost
 	rec.DurationMs = int(time.Since(startAt).Milliseconds())
 
 	// 以 chat 响应返回(content 里内嵌 markdown 图片)。
@@ -628,6 +577,7 @@ func (h *ImagesHandler) ImageEdits(c *gin.Context) {
 		size = "1024x1024"
 	}
 	upscale := image.ValidateUpscale(c.Request.FormValue("upscale"))
+	waitForResult := parseBoolDefault(c.Request.FormValue("wait_for_result"), true)
 
 	// 主图 + 可能的多张
 	files, err := collectEditFiles(c.Request.MultipartForm)
@@ -665,47 +615,24 @@ func (h *ImagesHandler) ImageEdits(c *gin.Context) {
 		refs = append(refs, image.ReferenceImage{Data: data, FileName: filepath.Base(fh.Filename)})
 	}
 
-	// usage 记录
 	refID := uuid.NewString()
-	rec := &usage.Log{
-		UserID:    ak.UserID,
-		KeyID:     ak.ID,
-		RequestID: refID,
-		Type:      usage.TypeImage,
-		IP:        c.ClientIP(),
-		UA:        c.Request.UserAgent(),
-	}
-	defer func() {
-		rec.DurationMs = int(time.Since(startAt).Milliseconds())
-		if rec.Status == "" {
-			rec.Status = usage.StatusFailed
-		}
-		if h.Usage != nil {
-			h.Usage.Write(rec)
-		}
-	}()
-	fail := func(code string) { rec.Status = usage.StatusFailed; rec.ErrorCode = code }
 
 	if !ak.ModelAllowed(model) {
-		fail("model_not_allowed")
 		openAIError(c, http.StatusForbidden, "model_not_allowed",
 			fmt.Sprintf("当前 API Key 无权调用模型 %q", model))
 		return
 	}
 	m, err := h.Models.BySlug(c.Request.Context(), model)
 	if err != nil || m == nil || !m.Enabled {
-		fail("model_not_found")
 		openAIError(c, http.StatusBadRequest, "model_not_found",
 			fmt.Sprintf("模型 %q 不存在或已下架", model))
 		return
 	}
 	if m.Type != modelpkg.TypeImage {
-		fail("model_type_mismatch")
 		openAIError(c, http.StatusBadRequest, "model_type_mismatch",
 			fmt.Sprintf("模型 %q 不是图像模型,不能用于 /v1/images/edits", model))
 		return
 	}
-	rec.ModelID = m.ID
 
 	ratio := 1.0
 	rpmCap := ak.RPM
@@ -719,7 +646,6 @@ func (h *ImagesHandler) ImageEdits(c *gin.Context) {
 	}
 	if h.Limiter != nil {
 		if ok, _, err := h.Limiter.AllowRPM(c.Request.Context(), ak.ID, rpmCap); err == nil && !ok {
-			fail("rate_limit_rpm")
 			openAIError(c, http.StatusTooManyRequests, "rate_limit_rpm",
 				"触发每分钟请求数限制 (RPM),请稍后再试")
 			return
@@ -730,29 +656,18 @@ func (h *ImagesHandler) ImageEdits(c *gin.Context) {
 	if cost > 0 {
 		if err := h.Billing.PreDeduct(c.Request.Context(), ak.UserID, ak.ID, cost, refID, "image-edit prepay"); err != nil {
 			if errors.Is(err, billing.ErrInsufficient) {
-				fail("insufficient_balance")
 				openAIError(c, http.StatusPaymentRequired, "insufficient_balance",
 					"积分不足,请前往「账单与充值」充值后再试")
 				return
 			}
-			fail("billing_error")
 			openAIError(c, http.StatusInternalServerError, "billing_error", "计费异常:"+err.Error())
 			return
 		}
 	}
-	refunded := false
-	refund := func(code string) {
-		fail(code)
-		if refunded || cost == 0 {
-			return
-		}
-		refunded = true
-		_ = h.Billing.Refund(context.Background(), ak.UserID, ak.ID, cost, refID, "image-edit refund")
-	}
 
 	taskID := image.GenerateTaskID()
 	if h.DAO != nil {
-		_ = h.DAO.Create(c.Request.Context(), &image.Task{
+		if err := h.DAO.Create(c.Request.Context(), &image.Task{
 			TaskID:          taskID,
 			UserID:          ak.UserID,
 			KeyID:           ak.ID,
@@ -763,62 +678,52 @@ func (h *ImagesHandler) ImageEdits(c *gin.Context) {
 			Upscale:         upscale,
 			Status:          image.StatusDispatched,
 			EstimatedCredit: cost,
-		})
+		}); err != nil {
+			_ = h.Billing.Refund(context.Background(), ak.UserID, ak.ID, cost, refID, "image-edit refund")
+			openAIError(c, http.StatusInternalServerError, "internal_error", "创建任务失败:"+err.Error())
+			return
+		}
 	}
 
-	runCtx, cancel := context.WithTimeout(c.Request.Context(), 8*time.Minute)
-	defer cancel()
-
-	res := h.Runner.Run(runCtx, image.RunOptions{
+	resultCh := h.runImageTaskAsync(imageAsyncRequest{
 		TaskID:        taskID,
-		UserID:        ak.UserID,
-		KeyID:         ak.ID,
-		ModelID:       m.ID,
-		UpstreamModel: m.UpstreamModelSlug,
-		Prompt:        maybeAppendClaritySuffix(prompt),
+		RefID:         refID,
+		APIKey:        ak,
+		Model:         m,
+		Prompt:        prompt,
 		N:             n,
+		Ratio:         ratio,
 		MaxAttempts:   1, // 带参考图时只跑一次,避免重复上传
 		References:    refs,
+		EstimatedCost: cost,
+		BillingAction: "image-edit",
+		StartAt:       startAt,
+		ClientIP:      c.ClientIP(),
+		UserAgent:     c.Request.UserAgent(),
 	})
-	rec.AccountID = res.AccountID
 
-	if res.Status != image.StatusSuccess {
-		refund(ifEmpty(res.ErrorCode, "upstream_error"))
-		httpStatus := http.StatusBadGateway
-		if res.ErrorCode == image.ErrNoAccount || res.ErrorCode == image.ErrRateLimited {
-			httpStatus = http.StatusServiceUnavailable
-		}
-		openAIError(c, httpStatus, ifEmpty(res.ErrorCode, "upstream_error"),
-			localizeImageErr(res.ErrorCode, res.ErrorMessage))
+	if !waitForResult {
+		c.JSON(http.StatusOK, ImageGenResponse{
+			Created: time.Now().Unix(),
+			TaskID:  taskID,
+			Data:    []ImageGenData{},
+		})
 		return
 	}
 
-	if cost > 0 {
-		if err := h.Billing.Settle(context.Background(), ak.UserID, ak.ID, cost, cost, refID, "image-edit settle"); err != nil {
-			logger.L().Error("billing settle image-edit", zap.Error(err), zap.String("ref", refID))
+	select {
+	case out := <-resultCh:
+		if out.ErrorCode != "" {
+			openAIError(c, out.HTTPStatus, out.ErrorCode, out.ErrorDetail)
+			return
 		}
+		c.JSON(http.StatusOK, out.Response)
+	case <-c.Request.Context().Done():
+		logger.L().Info("image-edit request canceled while waiting, task continues in background",
+			zap.String("task_id", taskID),
+			zap.Uint64("user_id", ak.UserID))
+		return
 	}
-	_ = h.Keys.DAO().TouchUsage(context.Background(), ak.ID, c.ClientIP(), cost)
-
-	rec.Status = usage.StatusSuccess
-	rec.CreditCost = cost
-	if h.DAO != nil {
-		_ = h.DAO.UpdateCost(c.Request.Context(), taskID, cost)
-	}
-
-	out := ImageGenResponse{
-		Created: time.Now().Unix(),
-		TaskID:  taskID,
-		Data:    make([]ImageGenData, 0, len(res.SignedURLs)),
-	}
-	for i := range res.SignedURLs {
-		d := ImageGenData{URL: image.BuildImageProxyURL(taskID, i, image.ImageProxyTTL)}
-		if i < len(res.FileIDs) {
-			d.FileID = strings.TrimPrefix(res.FileIDs[i], "sed:")
-		}
-		out.Data = append(out.Data, d)
-	}
-	c.JSON(http.StatusOK, out)
 }
 
 // collectEditFiles 把 multipart 里"可能作为参考图"的字段一次性收拢。
@@ -969,6 +874,18 @@ func parseIntClamp(s string, min, max int) (int, error) {
 		v = max
 	}
 	return v, nil
+}
+
+func parseBoolDefault(s string, fallback bool) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return fallback
+	}
+	v, err := strconv.ParseBool(s)
+	if err != nil {
+		return fallback
+	}
+	return v
 }
 
 func maybeAppendClaritySuffix(prompt string) string {

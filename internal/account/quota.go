@@ -189,6 +189,10 @@ func (q *QuotaProber) ProbeOne(ctx context.Context, a *Account) (*QuotaResult, e
 		res.Error = "写库失败:" + err.Error()
 		return res, err
 	}
+	if err := q.applyProbeStatus(ctx, a, probe); err != nil {
+		res.Error = "写账号状态失败:" + err.Error()
+		return res, err
+	}
 	res.OK = true
 	res.Remaining = probe.remaining
 	res.Total = probe.total
@@ -204,6 +208,34 @@ type probeOutcome struct {
 	resetAt         time.Time
 	defaultModel    string
 	blockedFeatures []string
+}
+
+func (q *QuotaProber) applyProbeStatus(ctx context.Context, a *Account, probe probeOutcome) error {
+	if a == nil {
+		return nil
+	}
+	switch a.Status {
+	case StatusDead, StatusSuspicious:
+		return nil
+	}
+
+	throttled := shouldThrottleFromProbe(probe)
+	if throttled {
+		var cooldown *time.Time
+		if !probe.resetAt.IsZero() {
+			cooldown = &probe.resetAt
+		}
+		if a.Status != StatusThrottled ||
+			(cooldown != nil && (!a.CooldownUntil.Valid || !a.CooldownUntil.Time.Equal(*cooldown))) ||
+			(cooldown == nil && a.CooldownUntil.Valid) {
+			return q.svc.dao.SetStatus(ctx, a.ID, StatusThrottled, cooldown)
+		}
+		return nil
+	}
+	if a.Status == StatusThrottled {
+		return q.svc.dao.SetStatus(ctx, a.ID, StatusHealthy, nil)
+	}
+	return nil
 }
 
 // doProbe 调 /backend-api/conversation/init。
@@ -348,6 +380,30 @@ func isImageFeature(name string) bool {
 		return true
 	}
 	return strings.Contains(n, "image_gen") || strings.Contains(n, "img_gen")
+}
+
+func shouldThrottleFromProbe(probe probeOutcome) bool {
+	if hasBlockedImageFeature(probe.blockedFeatures) {
+		return true
+	}
+	return probe.remaining == 0
+}
+
+func hasBlockedImageFeature(features []string) bool {
+	for _, item := range features {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		base := strings.ToLower(item)
+		if idx := strings.Index(base, "("); idx >= 0 {
+			base = strings.TrimSpace(base[:idx])
+		}
+		if isImageFeature(base) {
+			return true
+		}
+	}
+	return false
 }
 
 func decodeBlockedFeatures(raw json.RawMessage) []string {

@@ -3,11 +3,14 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { storeToRefs } from 'pinia'
 import { useUserStore } from '@/stores/user'
-import { formatCredit } from '@/utils/format'
+import { formatCredit, formatDateTime } from '@/utils/format'
 import {
+  getMyImageTask,
+  listMyImageTasks,
   listMyModels,
-  streamPlayChat,
   playGenerateImage,
+  streamPlayChat,
+  type ImageTask,
   type SimpleModel,
   type PlayChatMessage,
   type PlayImageData,
@@ -36,6 +39,83 @@ const currentImageDesc = computed(
   () => imageModels.value.find((m) => m.slug === selectedImageModel.value)?.description || '',
 )
 
+const IMAGE_POLL_INTERVAL_MS = 3000
+const RECENT_IMAGE_LIMIT = 8
+
+const recentImageTasks = ref<ImageTask[]>([])
+const recentImageTasksLoading = ref(false)
+let recentImageTasksInflight = false
+let recentImageTimer: number | null = null
+
+function isImageTaskPending(status: string) {
+  return status === 'queued' || status === 'dispatched' || status === 'running'
+}
+
+function imageStatusTag(status: string): 'success' | 'warning' | 'danger' | 'info' {
+  if (status === 'success') return 'success'
+  if (status === 'failed') return 'danger'
+  if (isImageTaskPending(status)) return 'warning'
+  return 'info'
+}
+
+function imageStatusText(status: string) {
+  if (status === 'queued') return '排队中'
+  if (status === 'dispatched') return '待调度'
+  if (status === 'running') return '生成中'
+  if (status === 'success') return '已完成'
+  if (status === 'failed') return '失败'
+  return status || '未知'
+}
+
+function imageTaskToResult(task: ImageTask): PlayImageData[] {
+  return (task.image_urls || []).map((url, idx) => ({
+    url,
+    file_id: task.file_ids?.[idx],
+  }))
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
+
+function clearRecentImageTimer() {
+  if (recentImageTimer !== null) {
+    window.clearTimeout(recentImageTimer)
+    recentImageTimer = null
+  }
+}
+
+function scheduleRecentImageRefresh() {
+  clearRecentImageTimer()
+  if (!recentImageTasks.value.some((task) => isImageTaskPending(task.status))) return
+  recentImageTimer = window.setTimeout(() => {
+    loadRecentImageTasks(true).catch(() => {})
+  }, IMAGE_POLL_INTERVAL_MS)
+}
+
+function upsertRecentImageTask(task: ImageTask) {
+  const idx = recentImageTasks.value.findIndex((item) => item.task_id === task.task_id)
+  const next = recentImageTasks.value.slice()
+  if (idx >= 0) next.splice(idx, 1)
+  next.unshift(task)
+  recentImageTasks.value = next.slice(0, RECENT_IMAGE_LIMIT)
+  scheduleRecentImageRefresh()
+}
+
+async function loadRecentImageTasks(silent = false) {
+  if (recentImageTasksInflight) return
+  recentImageTasksInflight = true
+  if (!silent) recentImageTasksLoading.value = true
+  try {
+    const data = await listMyImageTasks({ limit: RECENT_IMAGE_LIMIT, offset: 0 })
+    recentImageTasks.value = data.items
+  } finally {
+    recentImageTasksInflight = false
+    if (!silent) recentImageTasksLoading.value = false
+    scheduleRecentImageRefresh()
+  }
+}
+
 onMounted(async () => {
   try {
     await userStore.fetchMe()
@@ -57,6 +137,7 @@ onMounted(async () => {
   } catch {
     // 静默;错误拦截器已提示
   }
+  loadRecentImageTasks().catch(() => {})
 })
 
 // ----------------------------------------------------
@@ -197,8 +278,6 @@ function copyText(s: string) {
   }
 }
 
-onBeforeUnmount(() => chatAbort.value?.abort())
-
 // ---------- 轻量 markdown 渲染(代码块 / 行内代码 / 粗体 / 链接) ----------
 function escapeHtml(s: string) {
   return s
@@ -322,6 +401,8 @@ const t2iSending = ref(false)
 const t2iResult = ref<PlayImageData[]>([])
 const t2iError = ref('')
 const t2iAbort = ref<AbortController | null>(null)
+const t2iTaskID = ref('')
+let t2iPollSeq = 0
 
 const imgExamples = [
   '赛博朋克城市夜景,霓虹雨夜,电影感光影,8k',
@@ -348,6 +429,7 @@ async function sendText2Img() {
   t2iSending.value = true
   t2iError.value = ''
   t2iResult.value = []
+  t2iTaskID.value = ''
   t2iAbort.value = new AbortController()
   try {
     const resp = await playGenerateImage(
@@ -357,28 +439,70 @@ async function sendText2Img() {
         n: t2iN.value,
         size: t2iSize.value,
         upscale: t2iUpscale.value || undefined,
+        wait_for_result: false,
       },
       t2iAbort.value.signal,
     )
-    t2iResult.value = resp.data || []
-    if (t2iResult.value.length === 0) {
-      t2iError.value = '未产出图片,请重试或更换描述'
-    } else {
-      ElMessage.success(`生成成功,共 ${t2iResult.value.length} 张`)
+    if (!resp.task_id) {
+      throw new Error('任务已提交，但服务端未返回 task_id')
     }
+    t2iTaskID.value = resp.task_id
+    ElMessage.success('任务已提交，正在后台生成')
+    loadRecentImageTasks(true).catch(() => {})
+    t2iAbort.value = null
+    await pollText2ImgTask(resp.task_id)
   } catch (err: unknown) {
+    if (err instanceof DOMException && err.name === 'AbortError') return
     const msg = err instanceof Error ? err.message : String(err)
     t2iError.value = msg
-    ElMessage.error(msg)
-  } finally {
+    if (msg) ElMessage.error(msg)
     t2iSending.value = false
+  } finally {
     t2iAbort.value = null
-    userStore.fetchMe().catch(() => {})
+  }
+}
+
+async function pollText2ImgTask(taskID: string) {
+  const seq = ++t2iPollSeq
+  while (seq === t2iPollSeq) {
+    try {
+      const task = await getMyImageTask(taskID)
+      upsertRecentImageTask(task)
+      if (task.status === 'success') {
+        t2iResult.value = imageTaskToResult(task)
+        t2iError.value = t2iResult.value.length ? '' : '任务已完成，但没有返回可展示的图片'
+        t2iSending.value = false
+        userStore.fetchMe().catch(() => {})
+        if (t2iResult.value.length > 0) {
+          ElMessage.success(`生成成功，共 ${t2iResult.value.length} 张`)
+        }
+        return
+      }
+      if (task.status === 'failed') {
+        t2iError.value = task.error || '图片生成失败'
+        t2iSending.value = false
+        userStore.fetchMe().catch(() => {})
+        ElMessage.error(t2iError.value)
+        return
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      t2iError.value = `任务已提交，但轮询失败：${msg || 'unknown error'}`
+      t2iSending.value = false
+      ElMessage.warning('后台任务仍在继续，可在下方最近图片任务中查看结果')
+      return
+    }
+    await sleep(IMAGE_POLL_INTERVAL_MS)
   }
 }
 
 function stopText2Img() {
   t2iAbort.value?.abort()
+  t2iPollSeq++
+  if (t2iSending.value && t2iTaskID.value) {
+    ElMessage.info('已停止等待，后台任务仍会继续生成，可在下方最近图片任务中查看结果')
+  }
+  t2iSending.value = false
 }
 
 function openInNewWindow(url: string) {
@@ -418,6 +542,8 @@ const i2iSending = ref(false)
 const i2iResult = ref<PlayImageData[]>([])
 const i2iError = ref('')
 const i2iAbort = ref<AbortController | null>(null)
+const i2iTaskID = ref('')
+let i2iPollSeq = 0
 const MAX_REF_BYTES = 4 * 1024 * 1024 // 4MB
 
 function handleFilePick(e: Event) {
@@ -462,6 +588,7 @@ async function sendImg2Img() {
   i2iSending.value = true
   i2iError.value = ''
   i2iResult.value = []
+  i2iTaskID.value = ''
   i2iAbort.value = new AbortController()
   try {
     const resp = await playGenerateImage(
@@ -472,21 +599,70 @@ async function sendImg2Img() {
         size: i2iSize.value,
         reference_images: refImages.value.map((r) => r.dataUrl),
         upscale: i2iUpscale.value || undefined,
+        wait_for_result: false,
       },
       i2iAbort.value.signal,
     )
-    i2iResult.value = resp.data || []
-    if (i2iResult.value.length > 0) {
-      ElMessage.success(`生成成功,共 ${i2iResult.value.length} 张`)
+    if (!resp.task_id) {
+      throw new Error('任务已提交，但服务端未返回 task_id')
     }
+    i2iTaskID.value = resp.task_id
+    ElMessage.success('任务已提交，正在后台生成')
+    loadRecentImageTasks(true).catch(() => {})
+    i2iAbort.value = null
+    await pollImg2ImgTask(resp.task_id)
   } catch (err: unknown) {
+    if (err instanceof DOMException && err.name === 'AbortError') return
     const msg = err instanceof Error ? err.message : String(err)
     i2iError.value = msg
-    ElMessage.error(msg)
-  } finally {
+    if (msg) ElMessage.error(msg)
     i2iSending.value = false
+  } finally {
     i2iAbort.value = null
   }
+}
+
+async function pollImg2ImgTask(taskID: string) {
+  const seq = ++i2iPollSeq
+  while (seq === i2iPollSeq) {
+    try {
+      const task = await getMyImageTask(taskID)
+      upsertRecentImageTask(task)
+      if (task.status === 'success') {
+        i2iResult.value = imageTaskToResult(task)
+        i2iError.value = i2iResult.value.length ? '' : '任务已完成，但没有返回可展示的图片'
+        i2iSending.value = false
+        userStore.fetchMe().catch(() => {})
+        if (i2iResult.value.length > 0) {
+          ElMessage.success(`生成成功，共 ${i2iResult.value.length} 张`)
+        }
+        return
+      }
+      if (task.status === 'failed') {
+        i2iError.value = task.error || '图片生成失败'
+        i2iSending.value = false
+        userStore.fetchMe().catch(() => {})
+        ElMessage.error(i2iError.value)
+        return
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      i2iError.value = `任务已提交，但轮询失败：${msg || 'unknown error'}`
+      i2iSending.value = false
+      ElMessage.warning('后台任务仍在继续，可在下方最近图片任务中查看结果')
+      return
+    }
+    await sleep(IMAGE_POLL_INTERVAL_MS)
+  }
+}
+
+function stopImg2Img() {
+  i2iAbort.value?.abort()
+  i2iPollSeq++
+  if (i2iSending.value && i2iTaskID.value) {
+    ElMessage.info('已停止等待，后台任务仍会继续生成，可在下方最近图片任务中查看结果')
+  }
+  i2iSending.value = false
 }
 
 // 代码块内的 "复制" 按钮(通过事件委托,避免每次重渲染都重新绑定)
@@ -503,6 +679,15 @@ function onMsgClick(e: MouseEvent) {
 // input 自动聚焦(tab 切换后)
 watch(activeTab, (v) => {
   if (v === 'chat') nextTick(() => inputRef.value?.focus?.())
+})
+
+onBeforeUnmount(() => {
+  chatAbort.value?.abort()
+  t2iAbort.value?.abort()
+  i2iAbort.value?.abort()
+  t2iPollSeq++
+  i2iPollSeq++
+  clearRecentImageTimer()
 })
 </script>
 
@@ -801,7 +986,7 @@ watch(activeTab, (v) => {
             </div>
 
             <el-button v-if="t2iSending" type="danger" @click="stopText2Img" round class="side-btn">
-              <el-icon><VideoPause /></el-icon> 停止
+              <el-icon><VideoPause /></el-icon> 停止等待
             </el-button>
             <el-button
               v-else
@@ -819,8 +1004,9 @@ watch(activeTab, (v) => {
           <section class="card-block img-main">
             <div v-if="t2iSending" class="stage loading">
               <div class="orb"><el-icon class="spin"><Loading /></el-icon></div>
-              <div class="stage-title">正在为你绘制…</div>
-              <div class="stage-sub">上游渲染通常需要 1-2 分钟,请保持页面打开</div>
+              <div class="stage-title">任务已提交，正在后台生成…</div>
+              <div class="stage-sub">可以离开当前页面，结果会自动轮询，也会出现在下方最近图片任务里</div>
+              <div v-if="t2iTaskID" class="stage-taskid">task_id: {{ t2iTaskID }}</div>
             </div>
             <div v-else-if="t2iError" class="err-block">
               <el-icon><WarningFilled /></el-icon>
@@ -949,11 +1135,14 @@ watch(activeTab, (v) => {
               />
             </div>
 
+            <el-button v-if="i2iSending" type="danger" @click="stopImg2Img" round class="side-btn">
+              <el-icon><VideoPause /></el-icon> 停止等待
+            </el-button>
             <el-button
+              v-else
               type="primary"
               round
               size="large"
-              :loading="i2iSending"
               :disabled="refImages.length === 0 || !i2iPrompt.trim()"
               @click="sendImg2Img"
               class="side-btn gen-btn"
@@ -963,13 +1152,15 @@ watch(activeTab, (v) => {
           </aside>
 
           <section class="card-block img-main">
-            <div v-if="i2iError" class="err-block">
+            <div v-if="i2iSending" class="stage loading">
+              <div class="orb"><el-icon class="spin"><Loading /></el-icon></div>
+              <div class="stage-title">任务已提交，正在后台生成…</div>
+              <div class="stage-sub">可以离开当前页面，结果会自动轮询，也会出现在下方最近图片任务里</div>
+              <div v-if="i2iTaskID" class="stage-taskid">task_id: {{ i2iTaskID }}</div>
+            </div>
+            <div v-else-if="i2iError" class="err-block">
               <el-icon><WarningFilled /></el-icon>
               {{ i2iError }}
-            </div>
-            <div v-else-if="i2iSending" class="stage loading">
-              <div class="orb"><el-icon class="spin"><Loading /></el-icon></div>
-              <div class="stage-title">正在生成…</div>
             </div>
             <div v-else-if="i2iResult.length === 0" class="stage">
               <div class="stage-art">🎨</div>
@@ -1000,6 +1191,56 @@ watch(activeTab, (v) => {
         </div>
       </el-tab-pane>
     </el-tabs>
+
+    <section class="card-block recent-block">
+      <div class="recent-head">
+        <div>
+          <div class="recent-title">最近图片任务</div>
+          <div class="recent-sub">
+            离开页面后回来，也可以在这里继续看结果。完整历史仍可在「接口文档」页面查看。
+          </div>
+        </div>
+        <el-button text @click="loadRecentImageTasks()">刷新</el-button>
+      </div>
+
+      <div v-if="recentImageTasksLoading && recentImageTasks.length === 0" class="recent-empty">
+        正在加载最近任务…
+      </div>
+      <div v-else-if="recentImageTasks.length === 0" class="recent-empty">
+        暂无图片任务
+      </div>
+      <div v-else class="recent-grid">
+        <article v-for="task in recentImageTasks" :key="task.task_id" class="recent-card">
+          <div class="recent-top">
+            <div class="recent-status">
+              <el-tag :type="imageStatusTag(task.status)" size="small" effect="plain">
+                {{ imageStatusText(task.status) }}
+              </el-tag>
+              <span class="recent-time">{{ formatDateTime(task.created_at) }}</span>
+            </div>
+            <span class="recent-taskid">{{ task.task_id }}</span>
+          </div>
+
+          <div class="recent-prompt">{{ task.prompt }}</div>
+          <div class="recent-info">{{ task.n }} 张 · {{ task.size }}</div>
+
+          <div v-if="task.image_urls?.length" class="recent-thumb-grid">
+            <img
+              v-for="(url, idx) in task.image_urls.slice(0, 4)"
+              :key="`${task.task_id}-${idx}`"
+              :src="url"
+              :alt="`${task.task_id}-${idx}`"
+              class="recent-thumb"
+              loading="lazy"
+              @click="openInNewWindow(url)"
+            />
+          </div>
+          <div v-else class="recent-note">
+            {{ task.status === 'failed' ? (task.error || '任务失败') : '后台处理中，可稍后回来查看' }}
+          </div>
+        </article>
+      </div>
+    </section>
 
   </div>
 </template>
@@ -1440,6 +1681,15 @@ watch(activeTab, (v) => {
   .stage-art { font-size: 64px; margin-bottom: 16px; opacity: 0.7; }
   .stage-title { font-size: 16px; font-weight: 600; color: var(--el-text-color-primary); }
   .stage-sub { font-size: 13px; margin-top: 6px; }
+  .stage-taskid {
+    margin-top: 4px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: var(--el-fill-color-light);
+    color: var(--el-text-color-secondary);
+    font-size: 12px;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+  }
   &.loading { gap: 14px; }
   .orb {
     width: 72px; height: 72px; border-radius: 50%;
@@ -1523,6 +1773,129 @@ watch(activeTab, (v) => {
   .result-grid { padding: 0; }
 }
 
+.recent-block {
+  margin-top: 16px !important;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.recent-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.recent-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.recent-sub {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--el-text-color-secondary);
+}
+
+.recent-empty {
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--el-text-color-secondary);
+  background: var(--el-fill-color-lighter);
+  border-radius: 12px;
+}
+
+.recent-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 14px;
+}
+
+.recent-card {
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 12px;
+  padding: 12px;
+  background: var(--el-bg-color);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.recent-top {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.recent-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.recent-time {
+  font-size: 12px;
+  color: var(--el-text-color-placeholder);
+}
+
+.recent-taskid {
+  color: var(--el-text-color-placeholder);
+  font-size: 11px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  word-break: break-all;
+}
+
+.recent-prompt {
+  color: var(--el-text-color-primary);
+  font-size: 13px;
+  line-height: 1.6;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.recent-info {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.recent-thumb-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.recent-thumb {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 10px;
+  cursor: pointer;
+  background: var(--el-fill-color-lighter);
+  transition: opacity 0.2s;
+  &:hover { opacity: 0.92; }
+}
+
+.recent-note {
+  min-height: 72px;
+  border-radius: 10px;
+  padding: 12px;
+  background: var(--el-fill-color-lighter);
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* ====================== Dark mode ====================== */
 :global(html.dark) .md :deep(.mdk-pre) {
   background: #0b1020;
@@ -1543,5 +1916,9 @@ watch(activeTab, (v) => {
   }
   .hero-sub { display: none; }
   .hero-stats { width: 100%; justify-content: flex-start; }
+  .recent-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
 }
 </style>

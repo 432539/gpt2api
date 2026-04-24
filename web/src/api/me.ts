@@ -244,6 +244,7 @@ export interface PlayImageRequest {
   // 本地 Catmull-Rom 高清放大档位:"" 原图 / "2k" 长边 2560 / "4k" 长边 3840。
   // 服务端仅保存标记,放大在图片代理 URL 首次被请求时做,PNG 输出并进程内缓存。
   upscale?: '' | '2k' | '4k'
+  wait_for_result?: boolean
 }
 
 export interface PlayImageData {
@@ -292,7 +293,13 @@ export async function playEditImage(
   model: string,
   prompt: string,
   files: File[],
-  opts?: { n?: number; size?: string; upscale?: '' | '2k' | '4k'; signal?: AbortSignal },
+  opts?: {
+    n?: number
+    size?: string
+    upscale?: '' | '2k' | '4k'
+    wait_for_result?: boolean
+    signal?: AbortSignal
+  },
 ): Promise<PlayImageResponse> {
   if (!files.length) throw new Error('至少需要选择一张参考图')
   const token = localStorage.getItem('gpt2api.access') || ''
@@ -302,6 +309,7 @@ export async function playEditImage(
   if (opts?.n) fd.append('n', String(opts.n))
   if (opts?.size) fd.append('size', opts.size)
   if (opts?.upscale) fd.append('upscale', opts.upscale)
+  if (opts?.wait_for_result !== undefined) fd.append('wait_for_result', String(opts.wait_for_result))
   files.forEach((f, idx) => {
     // OpenAI 规范:第一张用 `image`,后续用 `image[]`;服务端两个字段都认。
     fd.append(idx === 0 ? 'image' : 'image[]', f, f.name)
