@@ -2,7 +2,7 @@ app:
   name: gpt2api
   env: dev              # dev | prod
   listen: ":8080"
-  base_url: "http://localhost:8080"
+  base_url: "http://localhost:8081"
 
 log:
   level: info           # debug | info | warn | error
@@ -32,6 +32,9 @@ jwt:
 crypto:
   # 32 字节 hex(64 字符),用于 AES-256-GCM 加密账号 AT / cookies
   aes_key: "CHANGE_ME_TO_64_HEX_CHARS_AES_256_KEY_000000000000000000000000"
+
+image_store:
+  dir: "data/images"
 
 security:
   bcrypt_cost: 10

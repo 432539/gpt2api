@@ -206,7 +206,7 @@ flowchart LR
 | **git** | 任意 | 克隆仓库 |
 
 > Windows 用户装 Go + Node + Docker Desktop 即可;Linux 服务器一条 `apt install -y golang-go nodejs npm docker.io docker-compose-plugin` 基本够用。  
-> 打包机与运行机**不必是同一台**,`build-local.sh/ps1` 默认交叉编译成 `linux/amd64`,产出拷到服务器上也能直接 `docker compose build` 起。
+> 打包机与运行机**不必是同一台**,`build-local.sh/ps1` 默认按当前宿主机编译成 `linux/<host arch>`,也支持显式指定 `TARGETARCH=amd64|arm64` / `-Arch amd64|arm64`。
 
 **运行环境需要**:
 
@@ -226,8 +226,8 @@ cd gpt2api
 
 | 产物 | 路径 | 由谁产出 |
 |------|------|---------|
-| 后端二进制(linux/amd64) | `deploy/bin/gpt2api` | `go build ./cmd/server` |
-| 迁移工具(linux/amd64) | `deploy/bin/goose` | `go build github.com/pressly/goose/v3/cmd/goose@v3.20.0` |
+| 后端二进制(linux/<target arch>) | `deploy/bin/gpt2api` | `go build ./cmd/server` |
+| 迁移工具(linux/<target arch>) | `deploy/bin/goose` | `go build github.com/pressly/goose/v3/cmd/goose@v3.20.0` |
 | 前端产物 | `web/dist/` | `cd web && npm install && npm run build` |
 
 仓库已经把**这三步打包到一个脚本**,一条命令搞定:
@@ -236,6 +236,8 @@ cd gpt2api
 
 ```bash
 bash deploy/build-local.sh
+TARGETARCH=arm64 bash deploy/build-local.sh
+TARGETARCH=amd64 bash deploy/build-local.sh
 # 增量:只编译缺失的 goose。第一次会自动 npm install(首次慢,之后秒级)
 # 强制重编译 goose:bash deploy/build-local.sh --force
 ```
@@ -244,6 +246,7 @@ bash deploy/build-local.sh
 
 ```powershell
 powershell -NoProfile -File deploy\build-local.ps1
+powershell -NoProfile -File deploy\build-local.ps1 -Arch arm64
 # 强制重编译 goose:powershell -NoProfile -File deploy\build-local.ps1 -Force
 ```
 
@@ -256,12 +259,26 @@ powershell -NoProfile -File deploy\build-local.ps1
 -rw-r--r-- ... web/dist/index.html
 ```
 
+> 现在也可以直接用统一部署脚本: `bash deploy/deploy.sh`。它会自动处理首次部署缺失的 `.env` / `config.yaml`、`git pull`、本地编译、`docker compose build` 和 `up -d`。
 > 改完后端代码后**只需重跑 `build-local` 再 `docker compose build server`**;改前端只跑 `npm run build` + `docker compose build server` 即可。  
 > 有同事反馈 `go get` / `npm install` 慢,可以先 `go env -w GOPROXY=https://goproxy.cn,direct` 和 `npm config set registry https://registry.npmmirror.com`。
 
 ### 4. 配置 `.env` 与启动容器
 
+最省事的一条命令:
+
 ```bash
+bash deploy/deploy.sh
+```
+
+如果需要指定对外访问地址:
+
+```bash
+bash deploy/deploy.sh --base-url https://api.example.com
+```
+
+```bash
+cp configs/config.example.yaml configs/config.yaml
 cd deploy
 cp .env.example .env
 ```
@@ -294,13 +311,13 @@ docker compose logs -f server
 
 1. 等 `mysql` 健康;
 2. 跑 `goose up` 应用全部迁移(用户 / 账号 / 审计 / 备份元数据等十余张表);
-3. 启动 HTTP 服务 `:8080`。
+3. 启动 HTTP 服务(容器内 `:8080`,默认映射宿主机 `:8081`)。
 
 > ### ⚠️ 没有默认账号 / 密码 —— 首位注册者自动成为管理员
 >
 > **本项目 *不* 预置任何"默认管理员账号"或"默认密码"。** 部署起来后请按以下步骤走:
 >
-> 1. 浏览器打开 **`http://<服务器IP>:8080/register`**
+> 1. 浏览器打开 **`http://<服务器IP>:8081/register`**
 > 2. 用自己的邮箱 + 自设密码完成第一次注册
 > 3. **这第一个账号会自动拿到 `admin` 角色**(见 `internal/auth/service.go` 的 `Register` Bootstrap 规则)
 > 4. 之后再注册的账号都是普通用户
@@ -310,7 +327,7 @@ docker compose logs -f server
 
 ### 5. 首次登录
 
-- 前端站点地址:`http://<服务器IP>:8080/`
+- 前端站点地址:`http://<服务器IP>:8081/`
 - 按上面的 ⚠️ 框完成首位 admin 注册即可登录。
 - 忘记管理员密码、或需要把某个普通用户提权为 admin,见「FAQ · 管理员密码找回 / 提权」。
 
@@ -346,6 +363,7 @@ docker compose logs -f server
 | `redis` | `addr`, `pool_size` | Redis,生产推荐 pool=500(锁 / 限流 / 令牌桶) |
 | `jwt` | `secret`, `*_ttl_sec` | **生产必须覆盖** `secret` |
 | `crypto` | `aes_key` | **生产必须覆盖**,32 字节 hex,用于加密账号 AT / cookies |
+| `image_store` | `dir` | 生图原图本地落盘目录,默认 `data/images` |
 | `scheduler` | `min_interval_sec` | **单账号最小间隔秒**,对抗风控核心参数 |
 | `scheduler` | `daily_usage_ratio` | 单号日消耗熔断阈值(0~1,0.6 = 消耗超过日额度 60% 自动下线) |
 | `scheduler` | `cooldown_429_sec` | 连续 429 冷却时间 |

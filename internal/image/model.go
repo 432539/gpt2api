@@ -2,10 +2,10 @@
 //
 // M3 首版采用「同步直出 + 异步查询」混合路线:
 //
-//   * /v1/images/generations 默认是同步(wait_for_result=true),请求直接
+//   - /v1/images/generations 默认是同步(wait_for_result=true),请求直接
 //     阻塞到图片生成完成再返回。由网关层的 goroutine pool 承接并发(目标
 //     1000 并发),每个任务落库 + 走一次完整的上游协议链路。
-//   * /v1/images/tasks/:id 可作为异步查询入口,客户端也可设
+//   - /v1/images/tasks/:id 可作为异步查询入口,客户端也可设
 //     wait_for_result=false 拿到 task_id 后自行轮询(适合移动端/脚本)。
 //
 // 这样能复用现有的 Account + Proxy + 计费 + 限流路径,不引入额外的 Redis
@@ -65,19 +65,42 @@ type Task struct {
 
 // Result 是 Runner 返回给网关/客户端的生图结果。
 type Result struct {
-	TaskID         string         `json:"task_id"`
-	Status         string         `json:"status"`
-	ConversationID string         `json:"conversation_id,omitempty"`
-	Images         []ResultImage  `json:"images,omitempty"`
-	ErrorCode      string         `json:"error_code,omitempty"`
-	ErrorMessage   string         `json:"error_message,omitempty"`
-	CreditCost     int64          `json:"credit_cost"`
+	TaskID         string        `json:"task_id"`
+	Status         string        `json:"status"`
+	ConversationID string        `json:"conversation_id,omitempty"`
+	Images         []ResultImage `json:"images,omitempty"`
+	ErrorCode      string        `json:"error_code,omitempty"`
+	ErrorMessage   string        `json:"error_message,omitempty"`
+	CreditCost     int64         `json:"credit_cost"`
 }
 
 // ResultImage 单张生图。
 type ResultImage struct {
-	URL         string `json:"url"`          // 上游签名直链(短期有效,通常 15 分钟)
-	FileID      string `json:"file_id"`      // chatgpt.com file-service id(纯 id,不含 sed:)
+	URL         string `json:"url"`     // 上游签名直链(短期有效,通常 15 分钟)
+	FileID      string `json:"file_id"` // chatgpt.com file-service id(纯 id,不含 sed:)
 	IsSediment  bool   `json:"is_sediment,omitempty"`
 	ContentType string `json:"content_type,omitempty"`
+}
+
+// ResultCount 返回当前任务可展示的图片张数。
+func (t *Task) ResultCount() int {
+	fileCount := len(t.DecodeFileIDs())
+	urlCount := len(t.DecodeResultURLs())
+	if fileCount > urlCount {
+		return fileCount
+	}
+	return urlCount
+}
+
+// DisplayImageURLs 为当前任务动态生成一组展示 URL。
+func (t *Task) DisplayImageURLs(ttl time.Duration) []string {
+	count := t.ResultCount()
+	if count <= 0 {
+		return nil
+	}
+	out := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		out = append(out, BuildImageProxyURL(t.TaskID, i, ttl))
+	}
+	return out
 }

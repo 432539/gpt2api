@@ -2,16 +2,16 @@
 //
 // 完整链路(和文字聊天共用 f/conversation,只通过 system_hints=["picture_v2"] 区分):
 //
-//	0. (可选) GET /                              → 拿 oai-did cookie
-//	1. POST /backend-api/f/conversation/prepare      → conduit_token
-//	2. POST /backend-api/sentinel/chat-requirements → chat_token + 可选 POW 挑战
-//	3. POST /backend-api/f/conversation (SSE)         → 边解析边收 file-service://
-//	4. SSE 没直出 file-service 时轮询 GET /backend-api/conversation/{id}
-//	   任何一条 tool 消息出现 file-service / sediment asset_pointer 即算成功,
-//	   够 N 张立即返回;IMG2 已正式上线,不再做"灰度命中判定"。
-//	5. GET /backend-api/files/{fid}/download                   → 签名 URL(file-service)
-//	   GET /backend-api/conversation/{cid}/attachment/{sid}/download → 签名 URL(sediment)
-//	6. GET 签名 URL → 图片字节
+//  0. (可选) GET /                              → 拿 oai-did cookie
+//  1. POST /backend-api/f/conversation/prepare      → conduit_token
+//  2. POST /backend-api/sentinel/chat-requirements → chat_token + 可选 POW 挑战
+//  3. POST /backend-api/f/conversation (SSE)         → 边解析边收 file-service://
+//  4. SSE 没直出 file-service 时轮询 GET /backend-api/conversation/{id}
+//     任何一条 tool 消息出现 file-service / sediment asset_pointer 即算成功,
+//     够 N 张立即返回;IMG2 已正式上线,不再做"灰度命中判定"。
+//  5. GET /backend-api/files/{fid}/download                   → 签名 URL(file-service)
+//     GET /backend-api/conversation/{cid}/attachment/{sid}/download → 签名 URL(sediment)
+//  6. GET 签名 URL → 图片字节
 //
 // 注意:不要调用 /backend-api/conversation/init——这是老客户端路径,在免费账号上会
 // 直接 404 让整条链路失败,上游把 picture_v2 路由完全交给 f/conversation 的 payload。
@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 )
 
 // ImageConvOpts 是图像会话的入参。
@@ -373,14 +374,14 @@ func ParseImageSSE(stream <-chan SSEEvent) ImageSSEResult {
 
 // ImageToolMsg 是 conversation.mapping 里一条 IMG2 tool 消息的关键字段。
 type ImageToolMsg struct {
-	MessageID    string
-	CreateTime   float64
-	ModelSlug    string
-	Recipient    string
-	AuthorName   string
+	MessageID     string
+	CreateTime    float64
+	ModelSlug     string
+	Recipient     string
+	AuthorName    string
 	ImageGenTitle string
-	FileIDs      []string // file-service
-	SedimentIDs  []string // sediment
+	FileIDs       []string // file-service
+	SedimentIDs   []string // sediment
 }
 
 // GetConversationMapping 读取会话全量 mapping(轮询用)。
@@ -499,6 +500,7 @@ func ExtractImageToolMsgs(mapping map[string]interface{}) []ImageToolMsg {
 //   - 全程没拿到图才是 timeout
 type PollOpts struct {
 	BaselineToolIDs map[string]struct{} // 发送前已存在的 tool 消息 id,本次回合只看新增
+	IgnoreFileIDs   map[string]struct{} // 本次请求的输入参考图 file_id,轮询结果里命中时直接忽略
 	ExpectedN       int                 // 期望返回的图片张数,够了立即短路,默认 1
 	MaxWait         time.Duration       // 总超时,默认 300s(上游渲染慢时兜底补齐)
 	Interval        time.Duration       // 轮询间隔,默认 3s
@@ -529,6 +531,7 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 	}
 	baseline := opt.BaselineToolIDs
 
+	startAt := time.Now()
 	deadline := time.Now().Add(opt.MaxWait)
 
 	// 累计全程看到的 fid/sid,循环外可用(超时兜底:有图就算成功)
@@ -538,31 +541,85 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 		seenFile       = map[string]struct{}{}
 		seenSed        = map[string]struct{}{}
 		consecutive429 int
+		rounds         int
+		mappingOK      int
+		mappingErrs    int
+		noNewMsgRounds int
+		noAssetRounds  int
+		lastErrText    string
+		lastToolMsgs   int
+		lastNewToolMsg int
 	)
 
 	for time.Now().Before(deadline) {
+		rounds++
 		select {
 		case <-ctx.Done():
+			loggerL().Warn("image poll canceled",
+				zap.String("conv_id", convID),
+				zap.Duration("elapsed", time.Since(startAt)),
+				zap.Int("rounds", rounds),
+				zap.Int("mapping_ok", mappingOK),
+				zap.Int("mapping_errs", mappingErrs),
+				zap.Int("last_total_tool_msgs", lastToolMsgs),
+				zap.Int("last_new_tool_msgs", lastNewToolMsg),
+				zap.Int("files_seen", len(allFile)),
+				zap.Int("sediments_seen", len(allSed)),
+				zap.String("ctx_err", ctx.Err().Error()),
+			)
 			return PollStatusError, nil, nil
 		default:
 		}
 
 		mapping, err := c.getMappingRaw(ctx, convID)
 		if err != nil {
+			mappingErrs++
+			lastErrText = err.Error()
 			if ue, ok := err.(*UpstreamError); ok && ue.Status == 429 {
 				consecutive429++
+				if consecutive429 == 1 || consecutive429 >= 3 {
+					loggerL().Warn("image poll mapping 429",
+						zap.String("conv_id", convID),
+						zap.Duration("elapsed", time.Since(startAt)),
+						zap.Int("round", rounds),
+						zap.Int("mapping_errs", mappingErrs),
+						zap.Int("consecutive_429", consecutive429),
+						zap.Error(err),
+					)
+				}
 				if consecutive429 >= 3 {
+					loggerL().Warn("image poll aborted after repeated 429",
+						zap.String("conv_id", convID),
+						zap.Duration("elapsed", time.Since(startAt)),
+						zap.Int("rounds", rounds),
+						zap.Int("mapping_ok", mappingOK),
+						zap.Int("mapping_errs", mappingErrs),
+						zap.Int("files_seen", len(allFile)),
+						zap.Int("sediments_seen", len(allSed)),
+					)
 					return PollStatusError, nil, nil
 				}
 				sleep(ctx, 10*time.Second)
 				continue
 			}
+			consecutive429 = 0
+			if mappingErrs == 1 || mappingErrs%10 == 0 {
+				loggerL().Warn("image poll mapping fetch failed",
+					zap.String("conv_id", convID),
+					zap.Duration("elapsed", time.Since(startAt)),
+					zap.Int("round", rounds),
+					zap.Int("mapping_errs", mappingErrs),
+					zap.Error(err),
+				)
+			}
 			sleep(ctx, opt.Interval)
 			continue
 		}
 		consecutive429 = 0
+		mappingOK++
 
 		msgs := ExtractImageToolMsgs(mapping)
+		lastToolMsgs = len(msgs)
 		// baseline diff:只看本回合新增 tool 消息
 		var newMsgs []ImageToolMsg
 		if len(baseline) > 0 {
@@ -574,26 +631,72 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 		} else {
 			newMsgs = msgs
 		}
+		lastNewToolMsg = len(newMsgs)
+		if len(newMsgs) == 0 {
+			noNewMsgRounds++
+		}
 
 		// 跨 tool 消息聚合 fid/sid。IMG2 一次调用可能先出 sediment 预览再补
 		// file-service 终稿,或同一条消息里带 N 张 file id;这里都累计起来。
+		addedFile := 0
+		addedSed := 0
 		for _, m := range newMsgs {
 			for _, f := range m.FileIDs {
+				if _, ignore := opt.IgnoreFileIDs[f]; ignore {
+					continue
+				}
 				if _, ok := seenFile[f]; !ok {
 					seenFile[f] = struct{}{}
 					allFile = append(allFile, f)
+					addedFile++
 				}
 			}
 			for _, s := range m.SedimentIDs {
 				if _, ok := seenSed[s]; !ok {
 					seenSed[s] = struct{}{}
 					allSed = append(allSed, s)
+					addedSed++
 				}
 			}
+		}
+		if len(newMsgs) > 0 && addedFile+addedSed == 0 {
+			noAssetRounds++
+			if noAssetRounds == 1 || noAssetRounds%10 == 0 {
+				loggerL().Info("image poll saw tool messages without assets",
+					zap.String("conv_id", convID),
+					zap.Duration("elapsed", time.Since(startAt)),
+					zap.Int("round", rounds),
+					zap.Int("new_tool_msgs", len(newMsgs)),
+					zap.Int("total_tool_msgs", len(msgs)),
+					zap.Int("empty_asset_rounds", noAssetRounds),
+					zap.Int("mapping_errs", mappingErrs),
+				)
+			}
+		}
+		if addedFile+addedSed > 0 {
+			loggerL().Info("image poll found assets",
+				zap.String("conv_id", convID),
+				zap.Duration("elapsed", time.Since(startAt)),
+				zap.Int("round", rounds),
+				zap.Int("added_files", addedFile),
+				zap.Int("added_sediments", addedSed),
+				zap.Int("files_seen", len(allFile)),
+				zap.Int("sediments_seen", len(allSed)),
+			)
 		}
 
 		// 够 N 张立即短路返回(file-service 优先占配额,sediment 补位)
 		if len(allFile)+len(allSed) >= opt.ExpectedN {
+			loggerL().Info("image poll success",
+				zap.String("conv_id", convID),
+				zap.Duration("elapsed", time.Since(startAt)),
+				zap.Int("rounds", rounds),
+				zap.Int("mapping_ok", mappingOK),
+				zap.Int("mapping_errs", mappingErrs),
+				zap.Int("files_seen", len(allFile)),
+				zap.Int("sediments_seen", len(allSed)),
+				zap.Int("expected_n", opt.ExpectedN),
+			)
 			return PollStatusSuccess, allFile, allSed
 		}
 
@@ -602,8 +705,34 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 
 	// 超时兜底:只要拿到过至少 1 张,就算成功(速度优先,不等齐 N)
 	if len(allFile)+len(allSed) > 0 {
+		loggerL().Info("image poll partial success after timeout",
+			zap.String("conv_id", convID),
+			zap.Duration("elapsed", time.Since(startAt)),
+			zap.Int("rounds", rounds),
+			zap.Int("mapping_ok", mappingOK),
+			zap.Int("mapping_errs", mappingErrs),
+			zap.Int("files_seen", len(allFile)),
+			zap.Int("sediments_seen", len(allSed)),
+			zap.Int("expected_n", opt.ExpectedN),
+		)
 		return PollStatusSuccess, allFile, allSed
 	}
+	fields := []zap.Field{
+		zap.String("conv_id", convID),
+		zap.Duration("elapsed", time.Since(startAt)),
+		zap.Int("rounds", rounds),
+		zap.Int("mapping_ok", mappingOK),
+		zap.Int("mapping_errs", mappingErrs),
+		zap.Int("no_new_msg_rounds", noNewMsgRounds),
+		zap.Int("no_asset_rounds", noAssetRounds),
+		zap.Int("last_total_tool_msgs", lastToolMsgs),
+		zap.Int("last_new_tool_msgs", lastNewToolMsg),
+		zap.Int("expected_n", opt.ExpectedN),
+	}
+	if lastErrText != "" {
+		fields = append(fields, zap.String("last_mapping_err", lastErrText))
+	}
+	loggerL().Warn("image poll timeout without assets", fields...)
 	return PollStatusTimeout, nil, nil
 }
 

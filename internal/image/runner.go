@@ -16,10 +16,12 @@ import (
 	"github.com/432539/gpt2api/pkg/logger"
 )
 
-// QuotaDecrementor 允许 Runner 在生图成功后立即扣减账号剩余额度,
-// 无需等待下一次后台探测即可在前端看到正确数字。
-type QuotaDecrementor interface {
-	DecrQuota(ctx context.Context, accountID uint64, n int) error
+// QuotaManager 负责本地图片额度的预留与归还。
+// 已探测额度(account.image_quota_remaining >= 0)走原子预留,避免并发超卖;
+// 未知额度(<0)允许通过且保持原值不变。
+type QuotaManager interface {
+	ReserveImageQuota(ctx context.Context, accountID uint64, n int) (bool, error)
+	ReleaseImageQuota(ctx context.Context, accountID uint64, n int) error
 }
 
 // Runner 单次/多次生图的执行器。封装完整的 chatgpt.com 协议链路:
@@ -30,18 +32,24 @@ type QuotaDecrementor interface {
 // IMG2 已正式上线,不再做"灰度命中判定 / preview_only 换账号重试"这些节流操作,
 // 拿到任意 file-service / sediment 引用即算成功,以速度和效率优先。
 type Runner struct {
-	sched     *scheduler.Scheduler
-	dao       *DAO
-	quotaDecr QuotaDecrementor // 生图成功后立即扣减账号额度(可空,空时跳过)
+	sched    *scheduler.Scheduler
+	dao      *DAO
+	store    *LocalStore
+	quotaMgr QuotaManager // 本地额度预留/归还(可空,空时跳过)
 }
+
+const taskStateWriteTimeout = 5 * time.Second
 
 // NewRunner 构造 Runner。
 func NewRunner(sched *scheduler.Scheduler, dao *DAO) *Runner {
 	return &Runner{sched: sched, dao: dao}
 }
 
-// SetQuotaDecrementor 注入额度扣减器。
-func (r *Runner) SetQuotaDecrementor(qd QuotaDecrementor) { r.quotaDecr = qd }
+// SetQuotaManager 注入本地图片额度管理器。
+func (r *Runner) SetQuotaManager(qm QuotaManager) { r.quotaMgr = qm }
+
+// SetLocalStore 注入本地图片仓库。Runner 会在远端成功后把原图字节落盘。
+func (r *Runner) SetLocalStore(store *LocalStore) { r.store = store }
 
 // ReferenceImage 是图生图/编辑的一张参考图输入。
 // 只需要提供原始字节 + 可选的文件名,Runner 会在运行时调用 chatgpt Client 上传。
@@ -56,7 +64,7 @@ type RunOptions struct {
 	UserID            uint64
 	KeyID             uint64
 	ModelID           uint64
-	UpstreamModel     string           // 默认 "auto"(由上游根据 system_hints 挑选图像模型)
+	UpstreamModel     string // 默认 "auto"(由上游根据 system_hints 挑选图像模型)
 	Prompt            string
 	N                 int              // 期望返回的图片张数;够数 Poll 就立即返回(速度优先)
 	MaxAttempts       int              // 跨账号重试次数,仅用于无账号/限流等硬错误,默认 1
@@ -67,7 +75,7 @@ type RunOptions struct {
 
 // RunResult 是单次生图的输出。
 type RunResult struct {
-	Status         string   // success / failed
+	Status         string // success / failed
 	ConversationID string
 	AccountID      uint64
 	FileIDs        []string // chatgpt.com 侧的原始 ref("sed:" 前缀表示 sediment)
@@ -77,6 +85,39 @@ type RunResult struct {
 	ErrorMessage   string
 	Attempts       int // 跨账号尝试次数(runOnce 次数)
 	DurationMs     int64
+}
+
+func buildReferenceFileIDSet(refs []*chatgpt.UploadedFile) map[string]struct{} {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		if ref == nil || ref.FileID == "" {
+			continue
+		}
+		out[ref.FileID] = struct{}{}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func filterReferenceFileIDs(refs []string, referenceFileIDs map[string]struct{}) ([]string, int) {
+	if len(refs) == 0 || len(referenceFileIDs) == 0 {
+		return refs, 0
+	}
+	out := make([]string, 0, len(refs))
+	skipped := 0
+	for _, ref := range refs {
+		if _, ok := referenceFileIDs[ref]; ok {
+			skipped++
+			continue
+		}
+		out = append(out, ref)
+	}
+	return out, skipped
 }
 
 // Run 执行生图。会同步阻塞直到完成/失败;调用方自行做超时控制(传 ctx)。
@@ -112,64 +153,71 @@ func (r *Runner) Run(ctx context.Context, opt RunOptions) *RunResult {
 		// 并发模式:N 个 goroutine 各独立出 1 张
 		r.runParallel(ctx, opt, start, result)
 	} else {
-		// 串行模式(原逻辑):带跨账号重试
-		for attempt := 1; attempt <= opt.MaxAttempts; attempt++ {
-			result.Attempts = attempt
-			if err := ctx.Err(); err != nil {
-				result.ErrorCode = ErrUnknown
-				result.ErrorMessage = err.Error()
-				break
-			}
-
-			attemptCtx, cancel := context.WithTimeout(ctx, opt.PerAttemptTimeout)
-			ok, status, err := r.runOnce(attemptCtx, opt, result)
-			cancel()
-
-			if ok {
-				result.Status = StatusSuccess
-				result.ErrorCode = ""
-				result.ErrorMessage = ""
-				break
-			}
-			if err != nil {
-				result.ErrorMessage = err.Error()
-			}
-			result.ErrorCode = status
-
-			if attempt >= opt.MaxAttempts {
-				break
-			}
-			retryable := status == ErrRateLimited || status == ErrNoAccount ||
-				status == ErrAuthRequired || status == ErrNetworkTransient
-			if !retryable {
-				break
-			}
-			logger.L().Info("image runner retry with another account",
-				zap.String("task_id", opt.TaskID),
-				zap.String("reason", status),
-				zap.Int("attempt", attempt))
-		}
+		r.runWithRetry(ctx, opt, result)
 	}
 
 	result.DurationMs = time.Since(start).Milliseconds()
 
 	// 落库
 	if r.dao != nil && opt.TaskID != "" {
+		writeCtx, cancel := context.WithTimeout(context.Background(), taskStateWriteTimeout)
 		if result.Status == StatusSuccess {
-			_ = r.dao.MarkSuccess(ctx, opt.TaskID, result.ConversationID,
-				result.FileIDs, result.SignedURLs, 0 /* credit_cost 由网关负责写 */)
-			if r.quotaDecr != nil && result.AccountID > 0 {
-				n := len(result.FileIDs)
-				if n == 0 {
-					n = opt.N
-				}
-				_ = r.quotaDecr.DecrQuota(context.Background(), result.AccountID, n)
+			if err := r.dao.MarkSuccess(writeCtx, opt.TaskID, result.ConversationID,
+				result.FileIDs, result.SignedURLs, 0 /* credit_cost 由网关负责写 */); err != nil {
+				logger.L().Warn("image runner mark success failed",
+					zap.String("task_id", opt.TaskID),
+					zap.Error(err))
 			}
 		} else {
-			_ = r.dao.MarkFailed(ctx, opt.TaskID, result.ErrorCode)
+			if err := r.dao.MarkFailed(writeCtx, opt.TaskID, result.ErrorCode); err != nil {
+				logger.L().Warn("image runner mark failed failed",
+					zap.String("task_id", opt.TaskID),
+					zap.String("error_code", result.ErrorCode),
+					zap.Error(err))
+			}
 		}
+		cancel()
 	}
 	return result
+}
+
+func (r *Runner) runWithRetry(ctx context.Context, opt RunOptions, result *RunResult) {
+	for attempt := 1; attempt <= opt.MaxAttempts; attempt++ {
+		result.Attempts = attempt
+		if err := ctx.Err(); err != nil {
+			result.ErrorCode = ErrUnknown
+			result.ErrorMessage = err.Error()
+			return
+		}
+
+		attemptCtx, cancel := context.WithTimeout(ctx, opt.PerAttemptTimeout)
+		ok, status, err := r.runOnce(attemptCtx, opt, result)
+		cancel()
+
+		if ok {
+			result.Status = StatusSuccess
+			result.ErrorCode = ""
+			result.ErrorMessage = ""
+			return
+		}
+		if err != nil {
+			result.ErrorMessage = err.Error()
+		}
+		result.ErrorCode = status
+
+		if attempt >= opt.MaxAttempts {
+			return
+		}
+		retryable := status == ErrRateLimited || status == ErrNoAccount ||
+			status == ErrAuthRequired || status == ErrNetworkTransient
+		if !retryable {
+			return
+		}
+		logger.L().Info("image runner retry with another account",
+			zap.String("task_id", opt.TaskID),
+			zap.String("reason", status),
+			zap.Int("attempt", attempt))
+	}
 }
 
 // runParallel 并发启动 opt.N 个独立请求,每个各出 1 张图,最终合并到 result。
@@ -200,23 +248,18 @@ func (r *Runner) runParallel(ctx context.Context, opt RunOptions, start time.Tim
 		go func() {
 			defer wg.Done()
 			sub := &RunResult{Status: StatusFailed, ErrorCode: ErrUnknown}
-			attemptCtx, cancel := context.WithTimeout(ctx, opt.PerAttemptTimeout)
-			defer cancel()
-			ok, status, err := r.runOnce(attemptCtx, subOpt, sub)
+			r.runWithRetry(ctx, subOpt, sub)
 			msg := ""
-			if err != nil {
-				msg = err.Error()
-			}
-			if !ok && status == "" {
-				status = sub.ErrorCode
+			if sub.ErrorMessage != "" {
+				msg = sub.ErrorMessage
 			}
 			ch <- subResult{
-				ok:         ok,
+				ok:         sub.Status == StatusSuccess,
 				fileIDs:    sub.FileIDs,
 				signedURLs: sub.SignedURLs,
 				convID:     sub.ConversationID,
 				accountID:  sub.AccountID,
-				errCode:    status,
+				errCode:    sub.ErrorCode,
 				errMsg:     msg,
 			}
 		}()
@@ -226,9 +269,9 @@ func (r *Runner) runParallel(ctx context.Context, opt RunOptions, start time.Tim
 	go func() { wg.Wait(); close(ch) }()
 
 	var (
-		successCount  int
-		lastErrCode   string
-		lastErrMsg    string
+		successCount int
+		lastErrCode  string
+		lastErrMsg   string
 	)
 	for sr := range ch {
 		if sr.ok {
@@ -288,6 +331,27 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 	// MarkRunning 在 status=running 时 WHERE 不命中,所以用专门的 SetAccount。
 	if r.dao != nil && opt.TaskID != "" {
 		_ = r.dao.SetAccount(ctx, opt.TaskID, lease.Account.ID)
+	}
+	reservedQuota := false
+	reservedCount := opt.N
+	if reservedCount <= 0 {
+		reservedCount = 1
+	}
+	if r.quotaMgr != nil && lease.Account.ID > 0 {
+		ok, err := r.quotaMgr.ReserveImageQuota(ctx, lease.Account.ID, reservedCount)
+		if err != nil {
+			return false, ErrUnknown, fmt.Errorf("reserve image quota: %w", err)
+		}
+		if !ok {
+			return false, ErrNoAccount, errors.New("local image quota exhausted")
+		}
+		reservedQuota = true
+		defer func() {
+			if !reservedQuota {
+				return
+			}
+			_ = r.quotaMgr.ReleaseImageQuota(context.Background(), lease.Account.ID, reservedCount)
+		}()
 	}
 
 	// 2) 构造上游 client
@@ -360,6 +424,7 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 		logger.L().Info("image runner references uploaded",
 			zap.String("task_id", opt.TaskID), zap.Int("count", len(refs)))
 	}
+	referenceFileIDs := buildReferenceFileIDSet(refs)
 
 	// 注意:新会话不要本地生成 conversation_id,上游会 404。
 	// 真正的 conv_id 由 SSE 的 resume_conversation_token / sseResult.ConversationID 返回。
@@ -417,6 +482,8 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 		convID = sseResult.ConversationID
 		result.ConversationID = convID
 	}
+	filteredSSEFileIDs, skippedSSERefs := filterReferenceFileIDs(sseResult.FileIDs, referenceFileIDs)
+	sseResult.FileIDs = filteredSSEFileIDs
 
 	logger.L().Info("image runner SSE parsed",
 		zap.String("task_id", opt.TaskID),
@@ -426,6 +493,7 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 		zap.String("image_gen_task_id", sseResult.ImageGenTaskID),
 		zap.Int("sse_fids", len(sseResult.FileIDs)),
 		zap.Strings("sse_fids_list", sseResult.FileIDs),
+		zap.Int("sse_skipped_reference_fids", skippedSSERefs),
 		zap.Int("sse_sids", len(sseResult.SedimentIDs)),
 		zap.Strings("sse_sids_list", sseResult.SedimentIDs),
 	)
@@ -451,10 +519,13 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 		// 单轮新会话,不需要 baseline:conversation 里出现的每条 image_gen tool 消息
 		// 都是本次请求的产物。
 		pollOpt := chatgpt.PollOpts{
-			ExpectedN: opt.N,
-			MaxWait:   opt.PollMaxWait,
+			IgnoreFileIDs: referenceFileIDs,
+			ExpectedN:     opt.N,
+			MaxWait:       opt.PollMaxWait,
 		}
 		status, fids, sids := cli.PollConversationForImages(ctx, convID, pollOpt)
+		filteredPollFileIDs, skippedPollRefs := filterReferenceFileIDs(fids, referenceFileIDs)
+		fids = filteredPollFileIDs
 		logger.L().Info("image runner poll done",
 			zap.String("task_id", opt.TaskID),
 			zap.Uint64("account_id", lease.Account.ID),
@@ -462,6 +533,7 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 			zap.String("poll_status", string(status)),
 			zap.Int("poll_fids", len(fids)),
 			zap.Strings("poll_fids_list", fids),
+			zap.Int("poll_skipped_reference_fids", skippedPollRefs),
 			zap.Int("poll_sids", len(sids)),
 			zap.Strings("poll_sids_list", sids),
 		)
@@ -527,7 +599,42 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 	result.FileIDs = fileRefs
 	result.SignedURLs = signedURLs
 	result.ContentTypes = contentTypes
+	if reservedQuota {
+		if actualCount := len(signedURLs); actualCount > 0 && actualCount < reservedCount {
+			_ = r.quotaMgr.ReleaseImageQuota(context.Background(), lease.Account.ID, reservedCount-actualCount)
+		}
+		reservedQuota = false
+	}
+	r.archiveSignedImages(ctx, opt.TaskID, cli, signedURLs)
 	return true, "", nil
+}
+
+func (r *Runner) archiveSignedImages(ctx context.Context, taskID string, cli *chatgpt.Client, signedURLs []string) {
+	if r.store == nil || taskID == "" || cli == nil || len(signedURLs) == 0 {
+		return
+	}
+	for idx, rawURL := range signedURLs {
+		fetchCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		body, _, err := cli.FetchImage(fetchCtx, rawURL, 16*1024*1024)
+		cancel()
+		if err != nil {
+			logger.L().Warn("image runner archive fetch failed",
+				zap.String("task_id", taskID),
+				zap.Int("idx", idx),
+				zap.Error(err))
+			continue
+		}
+		if _, err := r.store.Save(taskID, idx, body); err != nil {
+			logger.L().Warn("image runner archive save failed",
+				zap.String("task_id", taskID),
+				zap.Int("idx", idx),
+				zap.Error(err))
+			continue
+		}
+		logger.L().Info("image runner archived local image",
+			zap.String("task_id", taskID),
+			zap.Int("idx", idx))
+	}
 }
 
 // classifyUpstream 把上游错误转成内部 error code。

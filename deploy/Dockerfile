@@ -3,8 +3,8 @@
 # "预构建 + 运行时" 镜像 —— 零外网依赖版本(国内 / 内网环境友好)
 # --------------------------------------------------------------
 # 构建前请先在宿主机生成以下产物(见 deploy/build-local.ps1 / build-local.sh):
-#   deploy/bin/gpt2api           Linux/amd64 可执行
-#   deploy/bin/goose             Linux/amd64 可执行
+#   deploy/bin/gpt2api           Linux/<target arch> 可执行
+#   deploy/bin/goose             Linux/<target arch> 可执行
 #   web/dist/                    前端 Vite 产物
 #
 # 这样容器内除了 alpine 的 apk 装几个小工具,不需要任何外网访问。
@@ -22,7 +22,7 @@ RUN sed -i 's@https\?://dl-cdn.alpinelinux.org@http://mirrors.ustc.edu.cn@g' /et
 
 WORKDIR /app
 
-# 后端 + goose 二进制(宿主交叉编译产物)
+# 后端 + goose 二进制(宿主交叉编译产物,架构需与镜像平台一致)
 COPY deploy/bin/gpt2api /app/gpt2api
 COPY deploy/bin/goose   /usr/local/bin/goose
 RUN chmod +x /app/gpt2api /usr/local/bin/goose
@@ -36,7 +36,7 @@ COPY configs /app/configs
 COPY deploy/entrypoint.sh /app/entrypoint.sh
 RUN sed -i 's/\r$//' /app/entrypoint.sh \
     && chmod +x /app/entrypoint.sh \
-    && mkdir -p /app/data/backups /app/logs
+    && mkdir -p /app/data/backups /app/data/images /app/logs
 
 EXPOSE 8080
 
