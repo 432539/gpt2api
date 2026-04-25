@@ -43,11 +43,17 @@ type taskView struct {
 }
 
 func toView(t *Task) taskView {
-	urls := t.DecodeResultURLs()
 	fids := t.DecodeFileIDs()
 	for i, id := range fids {
 		fids[i] = strings.TrimPrefix(id, "sed:")
 	}
+
+	// 生成代理 URL 而不是直接返回上游 URL（防止 403）
+	urls := make([]string, 0, len(fids))
+	for i := range fids {
+		urls = append(urls, BuildProxyURL(t.TaskID, i, 24*time.Hour))
+	}
+
 	return taskView{
 		ID: t.ID, TaskID: t.TaskID, UserID: t.UserID, ModelID: t.ModelID,
 		AccountID: t.AccountID, Prompt: t.Prompt, N: t.N, Size: t.Size,

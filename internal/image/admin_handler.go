@@ -2,6 +2,7 @@ package image
 
 import (
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -46,16 +47,22 @@ func (h *AdminHandler) List(c *gin.Context) {
 		return
 	}
 
-	// 把 result_urls JSON bytes 解成可读字符串数组后输出
+	// 把 result_urls JSON bytes 解成代理 URL 后输出
 	type rowOut struct {
 		AdminTaskRow
 		ResultURLsParsed []string `json:"result_urls_parsed"`
 	}
 	out := make([]rowOut, 0, len(rows))
 	for _, r := range rows {
+		// 生成代理 URL 而不是直接返回上游 URL
+		fids := r.DecodeFileIDs()
+		urls := make([]string, 0, len(fids))
+		for i := range fids {
+			urls = append(urls, BuildProxyURL(r.TaskID, i, 24*time.Hour))
+		}
 		out = append(out, rowOut{
 			AdminTaskRow:     r,
-			ResultURLsParsed: r.DecodeResultURLs(),
+			ResultURLsParsed: urls,
 		})
 	}
 
