@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { computed, ref, reactive, onMounted } from 'vue'
+import { ElMessage } from 'element-plus'
 import { http } from '@/api/http'
 import { formatDateTime } from '@/utils/format'
 
@@ -63,9 +64,63 @@ function onReset() {
 // 弹窗预览图片
 const previewDlg = ref(false)
 const previewRow = ref<TaskRow | null>(null)
-function openPreview(row: TaskRow) {
+const previewIndex = ref(0)
+const activePreviewURL = computed(() => {
+  const urls = previewRow.value?.result_urls_parsed || []
+  return urls[previewIndex.value] || ''
+})
+function openPreview(row: TaskRow, index = 0) {
   previewRow.value = row
+  previewIndex.value = index
   previewDlg.value = true
+}
+function selectPreview(index: number) {
+  previewIndex.value = index
+}
+
+async function downloadURL(url: string, filename: string) {
+  const resp = await fetch(url, { credentials: 'include' })
+  if (!resp.ok) throw new Error(`download ${resp.status}`)
+  const blob = await resp.blob()
+  const href = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = href
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(href)
+}
+
+function safeName(s: string) {
+  return (s || 'image').replace(/[\\\\/:*?"<>|]/g, '_').slice(0, 24) || 'image'
+}
+
+async function downloadOne(row: TaskRow, index = 0) {
+  const url = row.result_urls_parsed?.[index]
+  if (!url) return
+  try {
+    await downloadURL(url, `${safeName(row.prompt)}-${row.task_id}-${index + 1}.jpg`)
+    ElMessage.success('开始下载')
+  } catch {
+    ElMessage.error('下载失败')
+  }
+}
+
+async function downloadBatch(row: TaskRow) {
+  const urls = row.result_urls_parsed || []
+  if (urls.length === 0) return
+  let ok = 0
+  for (let i = 0; i < urls.length; i += 1) {
+    try {
+      await downloadURL(urls[i], `${safeName(row.prompt)}-${row.task_id}-${i + 1}.jpg`)
+      ok += 1
+      await new Promise((resolve) => setTimeout(resolve, 120))
+    } catch {
+      // 跳过失败项，继续后续下载
+    }
+  }
+  ElMessage[ok > 0 ? 'success' : 'error'](ok > 0 ? `已触发 ${ok} 张下载` : '批量下载失败')
 }
 
 const statusColor: Record<string, 'success' | 'danger' | 'warning' | 'info' | 'primary'> = {
@@ -123,13 +178,23 @@ onMounted(fetchList)
             <el-tag :type="statusColor[row.status] || 'info'" size="small">{{ row.status }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="结果" width="80">
+        <el-table-column label="结果" width="190">
           <template #default="{ row }">
-            <el-button
-              v-if="row.result_urls_parsed?.length"
-              type="primary" link size="small"
-              @click="openPreview(row)"
-            >预览({{ row.result_urls_parsed.length }})</el-button>
+            <div v-if="row.result_urls_parsed?.length" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <el-button
+                type="primary" link size="small"
+                @click="openPreview(row)"
+              >放大({{ row.result_urls_parsed.length }})</el-button>
+              <el-button
+                type="success" link size="small"
+                @click="downloadOne(row)"
+              >下载</el-button>
+              <el-button
+                v-if="row.result_urls_parsed.length > 1"
+                type="warning" link size="small"
+                @click="downloadBatch(row)"
+              >批量下载</el-button>
+            </div>
             <span v-else-if="row.error" style="font-size:11px;color:var(--el-color-danger)" :title="row.error">失败</span>
             <span v-else style="color:var(--el-text-color-secondary)">-</span>
           </template>
@@ -161,28 +226,43 @@ onMounted(fetchList)
     </div>
 
     <!-- 图片预览弹窗 -->
-    <el-dialog v-model="previewDlg" title="生成结果预览" width="680px">
+    <el-dialog v-model="previewDlg" title="生成结果预览" width="820px">
       <div v-if="previewRow">
         <div style="font-size:13px;color:var(--el-text-color-secondary);margin-bottom:10px;word-break:break-all">
           {{ previewRow.prompt }}
         </div>
-        <div style="display:flex;flex-wrap:wrap;gap:8px">
-          <a
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:12px">
+          <el-button size="small" type="success" @click="downloadOne(previewRow, previewIndex)">下载当前</el-button>
+          <el-button
+            v-if="previewRow.result_urls_parsed.length > 1"
+            size="small"
+            type="warning"
+            @click="downloadBatch(previewRow)"
+          >批量下载</el-button>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:center;min-height:360px;background:var(--el-fill-color-lighter);border-radius:8px;padding:12px">
+          <img
+            v-if="activePreviewURL"
+            :src="activePreviewURL"
+            alt="preview"
+            style="max-width:100%;max-height:60vh;object-fit:contain;border-radius:6px"
+          />
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px">
+          <div
             v-for="(url, idx) in previewRow.result_urls_parsed"
             :key="idx"
-            :href="url"
-            target="_blank"
-            style="display:block"
+            style="width:96px;height:96px;border-radius:6px;overflow:hidden;cursor:pointer;border:2px solid transparent"
+            :style="{ borderColor: idx === previewIndex ? 'var(--el-color-primary)' : 'transparent' }"
+            @click="selectPreview(idx)"
           >
             <el-image
               :src="url"
-              :preview-src-list="previewRow.result_urls_parsed"
-              :initial-index="idx"
               fit="cover"
-              style="width:200px;height:200px;border-radius:4px"
+              style="width:96px;height:96px"
               lazy
             />
-          </a>
+          </div>
         </div>
         <div v-if="previewRow.error" style="margin-top:12px;color:var(--el-color-danger);font-size:12px;word-break:break-all">
           错误:{{ previewRow.error }}

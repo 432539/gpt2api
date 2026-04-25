@@ -146,6 +146,7 @@ func (h *ImagesHandler) dispatchImageToChannel(c *gin.Context,
 	rec.Status = usage.StatusSuccess
 	rec.ModelID = m.ID
 	rec.CreditCost = finalCost
+	rec.ImageCount = actualCount(result)
 
 	c.JSON(http.StatusOK, ImageGenResponse{
 		Created: time.Now().Unix(),

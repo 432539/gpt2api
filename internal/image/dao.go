@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -111,10 +112,36 @@ SELECT id, task_id, user_id, key_id, model_id, account_id, prompt, n, size, upsc
 	return &t, nil
 }
 
+// MyTaskFilter 当前用户图片任务筛选条件。
+type MyTaskFilter struct {
+	Status    string
+	Keyword   string
+	CreatedAt *time.Time
+	CreatedTo *time.Time
+}
+
 // ListByUser 按用户分页。
-func (d *DAO) ListByUser(ctx context.Context, userID uint64, limit, offset int) ([]Task, error) {
+func (d *DAO) ListByUser(ctx context.Context, userID uint64, f MyTaskFilter, limit, offset int) ([]Task, error) {
 	if limit <= 0 {
 		limit = 20
+	}
+	where := []string{"user_id = ?"}
+	args := []interface{}{userID}
+	if f.Status != "" {
+		where = append(where, "status = ?")
+		args = append(args, f.Status)
+	}
+	if f.Keyword != "" {
+		where = append(where, "prompt LIKE ?")
+		args = append(args, "%"+f.Keyword+"%")
+	}
+	if f.CreatedAt != nil {
+		where = append(where, "created_at >= ?")
+		args = append(args, *f.CreatedAt)
+	}
+	if f.CreatedTo != nil {
+		where = append(where, "created_at <= ?")
+		args = append(args, *f.CreatedTo)
 	}
 	var out []Task
 	err := d.db.SelectContext(ctx, &out, `
@@ -122,9 +149,9 @@ SELECT id, task_id, user_id, key_id, model_id, account_id, prompt, n, size, upsc
        conversation_id, file_ids, result_urls, error, estimated_credit, credit_cost,
        created_at, started_at, finished_at
   FROM image_tasks
- WHERE user_id = ?
+ WHERE `+strings.Join(where, " AND ")+`
  ORDER BY id DESC
- LIMIT ? OFFSET ?`, userID, limit, offset)
+ LIMIT ? OFFSET ?`, append(args, limit, offset)...)
 	return out, err
 }
 

@@ -96,6 +96,13 @@ type Overall struct {
 	CreditCost   int64 `db:"credit_cost" json:"credit_cost"`
 }
 
+const imageCountExpr = `CASE
+  WHEN u.type <> 'image' THEN 0
+  WHEN u.image_count > 0 THEN u.image_count
+  WHEN u.status = 'success' THEN 1
+  ELSE 0
+END`
+
 // ---------- 内部 ----------
 
 // buildWhere 根据 filter 生成 WHERE 片段 + 参数列表。
@@ -183,7 +190,7 @@ func (d *QueryDAO) Overall(ctx context.Context, f Filter) (Overall, error) {
 SELECT COUNT(*)                                                                AS requests,
        COALESCE(SUM(CASE WHEN u.status = 'failed' THEN 1 ELSE 0 END), 0)       AS failures,
        COALESCE(SUM(CASE WHEN u.type   = 'chat'   THEN 1 ELSE 0 END), 0)       AS chat_requests,
-       COALESCE(SUM(CASE WHEN u.type   = 'image'  THEN u.image_count ELSE 0 END), 0) AS image_images,
+       COALESCE(SUM(`+imageCountExpr+`), 0)                                    AS image_images,
        COALESCE(SUM(u.input_tokens),  0)                                       AS input_tokens,
        COALESCE(SUM(u.output_tokens), 0)                                       AS output_tokens,
        COALESCE(SUM(u.credit_cost),   0)                                       AS credit_cost
@@ -210,7 +217,7 @@ SELECT u.model_id,
        COALESCE(SUM(CASE WHEN u.status='failed' THEN 1 ELSE 0 END), 0) AS failures,
        COALESCE(SUM(u.input_tokens),  0)                   AS input_tokens,
        COALESCE(SUM(u.output_tokens), 0)                   AS output_tokens,
-       COALESCE(SUM(u.image_count),   0)                   AS image_count,
+       COALESCE(SUM(`+imageCountExpr+`), 0)                AS image_count,
        COALESCE(SUM(u.credit_cost),   0)                   AS credit_cost,
        /* AVG 返回 DECIMAL(driver 会给 []uint8),必须 CAST 回整数才能 scan 进 int64 */
        COALESCE(CAST(AVG(u.duration_ms) AS SIGNED), 0)     AS avg_dur_ms
@@ -268,7 +275,7 @@ SELECT DATE_FORMAT(u.created_at, '%%Y-%%m-%%d')            AS day,
        COALESCE(SUM(CASE WHEN u.status='failed' THEN 1 ELSE 0 END), 0) AS failures,
        COALESCE(SUM(u.input_tokens),  0)                   AS input_tokens,
        COALESCE(SUM(u.output_tokens), 0)                   AS output_tokens,
-       COALESCE(SUM(u.image_count),   0)                   AS image_count,
+       COALESCE(SUM(`+imageCountExpr+`), 0)                AS image_count,
        COALESCE(SUM(u.credit_cost),   0)                   AS credit_cost
 FROM usage_logs u
 %s

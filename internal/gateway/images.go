@@ -299,6 +299,7 @@ func (h *ImagesHandler) ImageGenerations(c *gin.Context) {
 	// 7) usage
 	rec.Status = usage.StatusSuccess
 	rec.CreditCost = cost
+	rec.ImageCount = len(res.SignedURLs)
 
 	// 8) DAO 回写 credit_cost(Runner 已经 MarkSuccess,这里只补 credit_cost)
 	if h.DAO != nil {
@@ -363,14 +364,14 @@ func (h *ImagesHandler) ImageTask(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"task_id":          t.TaskID,
-		"status":           t.Status,
-		"conversation_id":  t.ConversationID,
-		"created":          t.CreatedAt.Unix(),
-		"finished_at":      nullableUnix(t.FinishedAt),
-		"error":            t.Error,
-		"credit_cost":      t.CreditCost,
-		"data":             data,
+		"task_id":         t.TaskID,
+		"status":          t.Status,
+		"conversation_id": t.ConversationID,
+		"created":         t.CreatedAt.Unix(),
+		"finished_at":     nullableUnix(t.FinishedAt),
+		"error":           t.Error,
+		"credit_cost":     t.CreditCost,
+		"data":            data,
 	})
 }
 
@@ -496,6 +497,7 @@ func (h *ImagesHandler) handleChatAsImage(c *gin.Context, rec *usage.Log, ak *ap
 
 	rec.Status = usage.StatusSuccess
 	rec.CreditCost = cost
+	rec.ImageCount = len(res.SignedURLs)
 	rec.DurationMs = int(time.Since(startAt).Milliseconds())
 
 	// 以 chat 响应返回(content 里内嵌 markdown 图片)。
@@ -809,6 +811,7 @@ func (h *ImagesHandler) ImageEdits(c *gin.Context) {
 
 	rec.Status = usage.StatusSuccess
 	rec.CreditCost = cost
+	rec.ImageCount = len(res.SignedURLs)
 	if h.DAO != nil {
 		_ = h.DAO.UpdateCost(c.Request.Context(), taskID, cost)
 	}
