@@ -67,6 +67,7 @@ type ImageGenRequest struct {
 	Style           string   `json:"style,omitempty"`
 	ResponseFormat  string   `json:"response_format,omitempty"` // url | b64_json(暂仅支持 url)
 	User            string   `json:"user,omitempty"`
+	Async           bool     `json:"async,omitempty"` // true 时立即返回 task_id,后台继续生成
 	ReferenceImages []string `json:"reference_images,omitempty"` // 非标准扩展,见注释
 	// Upscale 非标准扩展:控制"本服务对原图做本地高清放大"的目标档位。
 	// 可选值:""(原图直出,默认)/ "2k"(长边 2560) / "4k"(长边 3840)。
@@ -121,6 +122,7 @@ func (h *ImagesHandler) ImageGenerations(c *gin.Context) {
 		req.Size = "1024x1024"
 	}
 	req.Upscale = image.ValidateUpscale(req.Upscale)
+	async := req.Async
 
 	refID := uuid.NewString()
 	rec := &usage.Log{
@@ -131,7 +133,11 @@ func (h *ImagesHandler) ImageGenerations(c *gin.Context) {
 		IP:        c.ClientIP(),
 		UA:        c.Request.UserAgent(),
 	}
+	writeUsage := true
 	defer func() {
+		if !writeUsage {
+			return
+		}
 		rec.DurationMs = int(time.Since(startAt).Milliseconds())
 		if rec.Status == "" {
 			rec.Status = usage.StatusFailed
@@ -186,8 +192,21 @@ func (h *ImagesHandler) ImageGenerations(c *gin.Context) {
 
 	// 若本地模型配置了外置渠道(OpenAI DALL·E / Gemini imagen 等),优先走渠道。
 	// 参考图场景(reference_images)仍走原 ChatGPT 账号池 Runner。
-	if h.Channels != nil {
+	// async=true 需要落 image_tasks 并通过 /v1/images/tasks/:id 查询,因此走内置 Runner。
+	if h.Channels != nil && !async {
 		if handled := h.dispatchImageToChannel(c, ak, m, &req, rec, ratio); handled {
+			return
+		}
+	}
+	if async {
+		if h.DAO == nil {
+			fail("not_configured")
+			openAIError(c, http.StatusInternalServerError, "not_configured", "图片任务存储未初始化,无法提交异步任务")
+			return
+		}
+		if h.Runner == nil {
+			fail("not_configured")
+			openAIError(c, http.StatusInternalServerError, "not_configured", "图片 Runner 未初始化,请联系管理员")
 			return
 		}
 	}
@@ -219,6 +238,10 @@ func (h *ImagesHandler) ImageGenerations(c *gin.Context) {
 
 	// 4) 落任务
 	taskID := image.GenerateTaskID()
+	taskStatus := image.StatusDispatched
+	if async {
+		taskStatus = image.StatusQueued
+	}
 	task := &image.Task{
 		TaskID:          taskID,
 		UserID:          ak.UserID,
@@ -228,7 +251,7 @@ func (h *ImagesHandler) ImageGenerations(c *gin.Context) {
 		N:               req.N,
 		Size:            req.Size,
 		Upscale:         req.Upscale,
-		Status:          image.StatusDispatched,
+		Status:          taskStatus,
 		EstimatedCredit: cost,
 	}
 	if h.DAO != nil {
@@ -244,6 +267,38 @@ func (h *ImagesHandler) ImageGenerations(c *gin.Context) {
 	if err != nil {
 		refund("invalid_request_error")
 		openAIError(c, http.StatusBadRequest, "invalid_reference_image", "参考图解析失败:"+err.Error())
+		return
+	}
+
+	// async=true:请求只负责提交任务;后台 goroutine 继续跑完整 Runner + 计费闭环。
+	if async {
+		writeUsage = false
+		maxAttempts := 2
+		if len(refs) > 0 {
+			maxAttempts = 1
+		}
+		h.startAsyncImageRun(imageAsyncJob{
+			TaskID:        taskID,
+			RefID:         refID,
+			UserID:        ak.UserID,
+			KeyID:         ak.ID,
+			ModelID:       m.ID,
+			UpstreamModel: m.UpstreamModelSlug,
+			Prompt:        maybeAppendClaritySuffix(req.Prompt),
+			N:             req.N,
+			MaxAttempts:   maxAttempts,
+			Timeout:       7 * time.Minute,
+			Cost:          cost,
+			Refs:          refs,
+			StartAt:       startAt,
+			IP:            c.ClientIP(),
+			UA:            c.Request.UserAgent(),
+		})
+		c.JSON(http.StatusAccepted, gin.H{
+			"created": time.Now().Unix(),
+			"task_id": taskID,
+			"status":  image.StatusQueued,
+		})
 		return
 	}
 
@@ -328,6 +383,124 @@ func (h *ImagesHandler) ImageGenerations(c *gin.Context) {
 		out.Data = append(out.Data, d)
 	}
 	c.JSON(http.StatusOK, out)
+}
+
+type imageAsyncJob struct {
+	TaskID        string
+	RefID         string
+	UserID        uint64
+	KeyID         uint64
+	ModelID       uint64
+	UpstreamModel string
+	Prompt        string
+	N             int
+	MaxAttempts   int
+	Timeout       time.Duration
+	Cost          int64
+	Refs          []image.ReferenceImage
+	StartAt       time.Time
+	IP            string
+	UA            string
+}
+
+func (h *ImagesHandler) startAsyncImageRun(job imageAsyncJob) {
+	go func() {
+		rec := &usage.Log{
+			UserID:    job.UserID,
+			KeyID:     job.KeyID,
+			ModelID:   job.ModelID,
+			RequestID: job.RefID,
+			Type:      usage.TypeImage,
+			IP:        job.IP,
+			UA:        job.UA,
+		}
+		refunded := false
+		settled := false
+		refund := func(code string) {
+			rec.Status = usage.StatusFailed
+			rec.ErrorCode = code
+			if h.DAO != nil {
+				_ = h.DAO.MarkFailed(context.Background(), job.TaskID, code)
+			}
+			if refunded || settled || job.Cost == 0 {
+				return
+			}
+			refunded = true
+			if err := h.Billing.Refund(context.Background(), job.UserID, job.KeyID, job.Cost, job.RefID, "image async refund"); err != nil {
+				logger.L().Error("billing refund async image",
+					zap.Error(err), zap.String("ref", job.RefID), zap.String("task_id", job.TaskID))
+			}
+		}
+		defer func() {
+			if p := recover(); p != nil {
+				logger.L().Error("async image runner panic",
+					zap.Any("panic", p), zap.String("task_id", job.TaskID))
+				if rec.Status != usage.StatusSuccess {
+					refund("panic")
+				}
+			}
+			rec.DurationMs = int(time.Since(job.StartAt).Milliseconds())
+			if rec.Status == "" {
+				rec.Status = usage.StatusFailed
+			}
+			if h.Usage != nil {
+				h.Usage.Write(rec)
+			}
+		}()
+
+		if h.Runner == nil {
+			refund("not_configured")
+			return
+		}
+		if job.Timeout <= 0 {
+			job.Timeout = 7 * time.Minute
+		}
+		runCtx, cancel := context.WithTimeout(context.Background(), job.Timeout)
+		defer cancel()
+
+		res := h.Runner.Run(runCtx, image.RunOptions{
+			TaskID:        job.TaskID,
+			UserID:        job.UserID,
+			KeyID:         job.KeyID,
+			ModelID:       job.ModelID,
+			UpstreamModel: job.UpstreamModel,
+			Prompt:        job.Prompt,
+			N:             job.N,
+			MaxAttempts:   job.MaxAttempts,
+			References:    job.Refs,
+		})
+		rec.AccountID = res.AccountID
+
+		if res.Status != image.StatusSuccess {
+			refund(ifEmpty(res.ErrorCode, "upstream_error"))
+			return
+		}
+
+		if job.Cost > 0 {
+			if err := h.Billing.Settle(context.Background(), job.UserID, job.KeyID, job.Cost, job.Cost, job.RefID, "image async settle"); err != nil {
+				logger.L().Error("billing settle async image",
+					zap.Error(err), zap.String("ref", job.RefID), zap.String("task_id", job.TaskID))
+			} else {
+				settled = true
+			}
+		} else {
+			settled = true
+		}
+
+		rec.Status = usage.StatusSuccess
+		rec.CreditCost = job.Cost
+		rec.ImageCount = len(res.SignedURLs)
+		if rec.ImageCount <= 0 {
+			rec.ImageCount = job.N
+		}
+		if rec.ImageCount <= 0 {
+			rec.ImageCount = 1
+		}
+		_ = h.Keys.DAO().TouchUsage(context.Background(), job.KeyID, job.IP, job.Cost)
+		if h.DAO != nil {
+			_ = h.DAO.UpdateCost(context.Background(), job.TaskID, job.Cost)
+		}
+	}()
 }
 
 // ImageTask GET /v1/images/tasks/:id。
