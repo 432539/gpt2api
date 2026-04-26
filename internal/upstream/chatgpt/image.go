@@ -630,6 +630,7 @@ func ExtractAssistantTextMsgs(mapping map[string]interface{}) []string {
 //   - 全程没拿到图才是 timeout
 type PollOpts struct {
 	BaselineToolIDs map[string]struct{} // 发送前已存在的 tool 消息 id,本次回合只看新增
+	ExcludeFileIDs  map[string]struct{} // 需要排除的 file-service id,通常是用户上传的参考图
 	ExpectedN       int                 // 期望返回的图片张数,够了立即短路,默认 1
 	MaxWait         time.Duration       // 总超时,默认 300s(上游渲染慢时兜底补齐)
 	Interval        time.Duration       // 轮询间隔,默认 3s
@@ -719,6 +720,9 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 		// file-service 终稿,或同一条消息里带 N 张 file id;这里都累计起来。
 		for _, m := range newMsgs {
 			for _, f := range m.FileIDs {
+				if shouldExcludeFileRef(f, opt.ExcludeFileIDs) {
+					continue
+				}
 				if _, ok := seenFile[f]; !ok {
 					seenFile[f] = struct{}{}
 					allFile = append(allFile, f)
@@ -771,6 +775,25 @@ func isTerminalImageRejectionText(s string) bool {
 		}
 	}
 	return false
+}
+
+func shouldExcludeFileRef(ref string, exclude map[string]struct{}) bool {
+	if len(exclude) == 0 {
+		return false
+	}
+	ref = normalizeFileRef(ref)
+	if ref == "" {
+		return false
+	}
+	_, ok := exclude[ref]
+	return ok
+}
+
+func normalizeFileRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	ref = strings.TrimPrefix(ref, "file-service://")
+	ref = strings.TrimPrefix(ref, "sed:")
+	return ref
 }
 
 // getMappingRaw 拉 conversation 并返回 mapping。

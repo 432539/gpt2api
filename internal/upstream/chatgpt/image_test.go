@@ -154,6 +154,78 @@ func TestPollConversationForImagesReturnsRejectedOnAssistantRefusal(t *testing.T
 	}
 }
 
+func TestPollConversationForImagesExcludesReferenceFileIDs(t *testing.T) {
+	calls := 0
+	conversations := []map[string]interface{}{
+		{
+			"mapping": map[string]interface{}{
+				"tool_ref": imageToolMappingNode(1, []interface{}{
+					map[string]interface{}{"asset_pointer": "file-service://file_uploaded_ref"},
+				}),
+			},
+		},
+		{
+			"mapping": map[string]interface{}{
+				"tool_ref": imageToolMappingNode(1, []interface{}{
+					map[string]interface{}{"asset_pointer": "file-service://file_uploaded_ref"},
+				}),
+				"tool_result": imageToolMappingNode(2, []interface{}{
+					map[string]interface{}{"asset_pointer": "file-service://file_generated_result"},
+				}),
+			},
+		},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/conversation/conv_image" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		idx := calls
+		if idx >= len(conversations) {
+			idx = len(conversations) - 1
+		}
+		calls++
+		_ = json.NewEncoder(w).Encode(conversations[idx])
+	}))
+	defer srv.Close()
+
+	c := &Client{opts: Options{BaseURL: srv.URL}, hc: srv.Client()}
+	status, fids, sids, assistantText := c.PollConversationForImages(
+		context.Background(),
+		"conv_image",
+		PollOpts{
+			ExpectedN:      1,
+			ExcludeFileIDs: map[string]struct{}{"file_uploaded_ref": {}},
+			MaxWait:        time.Second,
+			Interval:       10 * time.Millisecond,
+		},
+	)
+
+	if status != PollStatusSuccess {
+		t.Fatalf("status = %q, want %q (text=%q)", status, PollStatusSuccess, assistantText)
+	}
+	if len(fids) != 1 || fids[0] != "file_generated_result" {
+		t.Fatalf("fids = %#v, want generated result only", fids)
+	}
+	if len(sids) != 0 {
+		t.Fatalf("sids = %#v, want empty", sids)
+	}
+}
+
+func imageToolMappingNode(createTime float64, parts []interface{}) map[string]interface{} {
+	return map[string]interface{}{
+		"message": map[string]interface{}{
+			"create_time": createTime,
+			"author":      map[string]interface{}{"role": "tool", "name": "image_gen"},
+			"recipient":   "image_gen",
+			"metadata":    map[string]interface{}{"async_task_type": "image_gen"},
+			"content": map[string]interface{}{
+				"content_type": "multimodal_text",
+				"parts":        parts,
+			},
+		},
+	}
+}
+
 func TestUpstreamErrorConversationIDFromHeaderAndBody(t *testing.T) {
 	err := &UpstreamError{Header: http.Header{"Openai-Conversation-Id": []string{"conv_header"}}}
 	if got := err.ConversationID(); got != "conv_header" {

@@ -10,7 +10,7 @@ import (
 func TestFilterOutReferenceFileIDs(t *testing.T) {
 	refs := []*chatgpt.UploadedFile{
 		{FileID: "file_uploaded_ref"},
-		{FileID: " sed:file_uploaded_ref_with_prefix "},
+		{FileID: " file-service://file_uploaded_ref_with_prefix "},
 		nil,
 	}
 
@@ -20,6 +20,7 @@ func TestFilterOutReferenceFileIDs(t *testing.T) {
 		"file_generated_result",
 		"sed:file_uploaded_ref",
 		"file_uploaded_ref_with_prefix",
+		"file-service://file_uploaded_ref_with_prefix",
 		"sed:file_generated_sediment",
 	}, refSet)
 

@@ -467,16 +467,14 @@ afterSSE:
 	// file-service:// 指纹和 assistant 的出图一起扫进 FileIDs,且参考图往往先出现。
 	// 必须在 len(fileRefs) >= opt.N 之前剔除,否则 n=1 时会误把上传图当结果图,
 	// 进而跳过 Poll,最终 /p/img/.../0 下载到的是用户上传的参考图。
-	if len(refs) > 0 {
-		refSet := referenceUploadFileIDSet(refs)
-		if len(refSet) > 0 {
-			n0 := len(fileRefs)
-			fileRefs = filterOutReferenceFileIDs(fileRefs, refSet)
-			if n0 != len(fileRefs) {
-				logger.L().Info("image runner stripped reference file_ids from SSE-captured refs",
-					zap.String("task_id", opt.TaskID),
-					zap.Int("before", n0), zap.Int("after", len(fileRefs)))
-			}
+	refSet := referenceUploadFileIDSet(refs)
+	if len(refSet) > 0 {
+		n0 := len(fileRefs)
+		fileRefs = filterOutReferenceFileIDs(fileRefs, refSet)
+		if n0 != len(fileRefs) {
+			logger.L().Info("image runner stripped reference file_ids from SSE-captured refs",
+				zap.String("task_id", opt.TaskID),
+				zap.Int("before", n0), zap.Int("after", len(fileRefs)))
 		}
 	}
 	if len(fileRefs) == 0 && isImageRejectionMessage(sseResult.AssistantText) {
@@ -511,8 +509,9 @@ afterSSE:
 		// 单轮新会话,不需要 baseline:conversation 里出现的每条 image_gen tool 消息
 		// 都是本次请求的产物。
 		pollOpt := chatgpt.PollOpts{
-			ExpectedN: opt.N,
-			MaxWait:   opt.PollMaxWait,
+			ExpectedN:      opt.N,
+			ExcludeFileIDs: refSet,
+			MaxWait:        opt.PollMaxWait,
 		}
 		status, fids, sids, assistantText := cli.PollConversationForImages(ctx, convID, pollOpt)
 		logger.L().Info("image runner poll done",
@@ -571,6 +570,18 @@ afterSSE:
 		}
 		return false, ErrUpstream, errors.New("no image ref produced")
 	}
+	if len(refSet) > 0 {
+		n0 := len(fileRefs)
+		fileRefs = filterOutReferenceFileIDs(fileRefs, refSet)
+		if len(fileRefs) == 0 {
+			return false, ErrInvalidResponse, errors.New("only reference image file refs were produced")
+		}
+		if n0 != len(fileRefs) {
+			logger.L().Warn("image runner stripped reference file_ids after polling",
+				zap.String("task_id", opt.TaskID),
+				zap.Int("before", n0), zap.Int("after", len(fileRefs)))
+		}
+	}
 
 	// 6) 对每个 ref 取签名 URL
 	var signedURLs []string
@@ -611,11 +622,11 @@ func referenceUploadFileIDSet(refs []*chatgpt.UploadedFile) map[string]struct{} 
 		if u == nil {
 			continue
 		}
-		id := strings.TrimSpace(u.FileID)
+		id := normalizeImageFileRef(u.FileID)
 		if id == "" {
 			continue
 		}
-		out[strings.TrimPrefix(id, "sed:")] = struct{}{}
+		out[id] = struct{}{}
 	}
 	return out
 }
@@ -632,12 +643,19 @@ func filterOutReferenceFileIDs(fileRefs []string, refSet map[string]struct{}) []
 			out = append(out, ref)
 			continue
 		}
-		if _, skip := refSet[ref]; skip {
+		if _, skip := refSet[normalizeImageFileRef(ref)]; skip {
 			continue
 		}
 		out = append(out, ref)
 	}
 	return out
+}
+
+func normalizeImageFileRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	ref = strings.TrimPrefix(ref, "file-service://")
+	ref = strings.TrimPrefix(ref, "sed:")
+	return ref
 }
 
 // classifyUpstream 把上游错误转成内部 error code。
