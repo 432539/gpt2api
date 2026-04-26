@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -86,10 +87,15 @@ func (d *DAO) UpdateCost(ctx context.Context, taskID string, cost int64) error {
 
 // MarkFailed 更新失败状态(带错误码)。
 func (d *DAO) MarkFailed(ctx context.Context, taskID, errorCode string) error {
+	return d.MarkFailedWithMessage(ctx, taskID, errorCode, "")
+}
+
+// MarkFailedWithMessage 更新失败状态,同时保留上游可读错误信息。
+func (d *DAO) MarkFailedWithMessage(ctx context.Context, taskID, errorCode, errorMessage string) error {
 	_, err := d.db.ExecContext(ctx, `
 UPDATE image_tasks
    SET status='failed', error=?, finished_at=NOW()
- WHERE task_id=?`, truncate(errorCode, 500), taskID)
+ WHERE task_id=?`, truncate(taskErrorDetail(errorCode, errorMessage), 500), taskID)
 	return err
 }
 
@@ -277,10 +283,25 @@ func nullJSON(b []byte) interface{} {
 	return b
 }
 
-func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
+func taskErrorDetail(code, message string) string {
+	code = strings.TrimSpace(code)
+	message = strings.TrimSpace(message)
+	if message == "" || message == code {
+		return code
 	}
-	return s[:max]
+	if code == "" {
+		return message
+	}
+	return code + ": " + message
 }
 
+func truncate(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	rs := []rune(s)
+	if len(rs) <= max {
+		return s
+	}
+	return string(rs[:max])
+}

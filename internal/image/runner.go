@@ -2,6 +2,7 @@ package image
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -56,7 +57,7 @@ type RunOptions struct {
 	UserID            uint64
 	KeyID             uint64
 	ModelID           uint64
-	UpstreamModel     string           // 默认 "auto"(由上游根据 system_hints 挑选图像模型)
+	UpstreamModel     string // 默认 "auto"(由上游根据 system_hints 挑选图像模型)
 	Prompt            string
 	N                 int              // 期望返回的图片张数;够数 Poll 就立即返回(速度优先)
 	MaxAttempts       int              // 跨账号重试次数,仅用于无账号/限流等硬错误,默认 1
@@ -67,7 +68,7 @@ type RunOptions struct {
 
 // RunResult 是单次生图的输出。
 type RunResult struct {
-	Status         string   // success / failed
+	Status         string // success / failed
 	ConversationID string
 	AccountID      uint64
 	FileIDs        []string // chatgpt.com 侧的原始 ref("sed:" 前缀表示 sediment)
@@ -132,7 +133,7 @@ func (r *Runner) Run(ctx context.Context, opt RunOptions) *RunResult {
 				break
 			}
 			if err != nil {
-				result.ErrorMessage = err.Error()
+				result.ErrorMessage = runnerErrorMessage(err)
 			}
 			result.ErrorCode = status
 
@@ -166,7 +167,7 @@ func (r *Runner) Run(ctx context.Context, opt RunOptions) *RunResult {
 				_ = r.quotaDecr.DecrQuota(context.Background(), result.AccountID, n)
 			}
 		} else {
-			_ = r.dao.MarkFailed(ctx, opt.TaskID, result.ErrorCode)
+			_ = r.dao.MarkFailedWithMessage(ctx, opt.TaskID, result.ErrorCode, result.ErrorMessage)
 		}
 	}
 	return result
@@ -205,7 +206,7 @@ func (r *Runner) runParallel(ctx context.Context, opt RunOptions, start time.Tim
 			ok, status, err := r.runOnce(attemptCtx, subOpt, sub)
 			msg := ""
 			if err != nil {
-				msg = err.Error()
+				msg = runnerErrorMessage(err)
 			}
 			if !ok && status == "" {
 				status = sub.ErrorCode
@@ -226,9 +227,9 @@ func (r *Runner) runParallel(ctx context.Context, opt RunOptions, start time.Tim
 	go func() { wg.Wait(); close(ch) }()
 
 	var (
-		successCount  int
-		lastErrCode   string
-		lastErrMsg    string
+		successCount int
+		lastErrCode  string
+		lastErrMsg   string
 	)
 	for sr := range ch {
 		if sr.ok {
@@ -457,6 +458,9 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 			}
 		}
 	}
+	if len(fileRefs) == 0 && isImageRejectionMessage(sseResult.AssistantText) {
+		return false, ErrUpstreamRejected, errors.New(sseResult.AssistantText)
+	}
 
 	// SSE 已经把期望数量的图带回来了 → 直接下载,跳过 Poll,省时间
 	if len(fileRefs) >= opt.N {
@@ -475,7 +479,7 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 			ExpectedN: opt.N,
 			MaxWait:   opt.PollMaxWait,
 		}
-		status, fids, sids := cli.PollConversationForImages(ctx, convID, pollOpt)
+		status, fids, sids, assistantText := cli.PollConversationForImages(ctx, convID, pollOpt)
 		logger.L().Info("image runner poll done",
 			zap.String("task_id", opt.TaskID),
 			zap.Uint64("account_id", lease.Account.ID),
@@ -509,13 +513,22 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 				fileRefs = append(fileRefs, key)
 			}
 		case chatgpt.PollStatusTimeout:
+			if msg := firstFilled(assistantText, sseResult.AssistantText); msg != "" {
+				return false, assistantFailureCode(msg, ErrPollTimeout), errors.New(msg)
+			}
 			return false, ErrPollTimeout, errors.New("poll timeout without any image")
 		default:
+			if msg := firstFilled(assistantText, sseResult.AssistantText); msg != "" {
+				return false, assistantFailureCode(msg, ErrUpstream), errors.New(msg)
+			}
 			return false, ErrUpstream, errors.New("poll error")
 		}
 	}
 
 	if len(fileRefs) == 0 {
+		if msg := strings.TrimSpace(sseResult.AssistantText); msg != "" {
+			return false, assistantFailureCode(msg, ErrUpstream), errors.New(msg)
+		}
 		return false, ErrUpstream, errors.New("no image ref produced")
 	}
 
@@ -614,6 +627,92 @@ func (r *Runner) classifyUpstream(err error) string {
 		return ErrNetworkTransient
 	}
 	return ErrUpstream
+}
+
+func runnerErrorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	var ue *chatgpt.UpstreamError
+	if errors.As(err, &ue) {
+		if msg := upstreamErrorBodyMessage(ue.Body); msg != "" {
+			return msg
+		}
+		if body := strings.TrimSpace(ue.Body); body != "" {
+			return truncate(body, 500)
+		}
+	}
+	return err.Error()
+}
+
+func upstreamErrorBodyMessage(body string) string {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return ""
+	}
+	var obj map[string]interface{}
+	if err := json.Unmarshal([]byte(body), &obj); err != nil {
+		return ""
+	}
+	if msg := stringField(obj, "message"); msg != "" {
+		return msg
+	}
+	if detail := stringField(obj, "detail"); detail != "" {
+		return detail
+	}
+	if e, ok := obj["error"].(string); ok {
+		return strings.TrimSpace(e)
+	}
+	if e, ok := obj["error"].(map[string]interface{}); ok {
+		if msg := stringField(e, "message"); msg != "" {
+			return msg
+		}
+		if code := stringField(e, "code"); code != "" {
+			return code
+		}
+	}
+	return ""
+}
+
+func stringField(m map[string]interface{}, key string) string {
+	if m == nil {
+		return ""
+	}
+	v, _ := m[key].(string)
+	return strings.TrimSpace(v)
+}
+
+func isImageRejectionMessage(s string) bool {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" {
+		return false
+	}
+	keywords := []string{
+		"抱歉", "无法", "不能", "不可以", "违反", "防护", "限制", "政策",
+		"sorry", "can't", "cannot", "unable", "not able", "policy", "safety",
+	}
+	for _, kw := range keywords {
+		if strings.Contains(s, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+func assistantFailureCode(message, fallback string) string {
+	if isImageRejectionMessage(message) {
+		return ErrUpstreamRejected
+	}
+	return fallback
+}
+
+func firstFilled(items ...string) string {
+	for _, s := range items {
+		if s = strings.TrimSpace(s); s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // GenerateTaskID 生成对外 task_id。

@@ -67,7 +67,7 @@ type ImageGenRequest struct {
 	Style           string   `json:"style,omitempty"`
 	ResponseFormat  string   `json:"response_format,omitempty"` // url | b64_json(暂仅支持 url)
 	User            string   `json:"user,omitempty"`
-	Async           bool     `json:"async,omitempty"` // true 时立即返回 task_id,后台继续生成
+	Async           bool     `json:"async,omitempty"`            // true 时立即返回 task_id,后台继续生成
 	ReferenceImages []string `json:"reference_images,omitempty"` // 非标准扩展,见注释
 	// Upscale 非标准扩展:控制"本服务对原图做本地高清放大"的目标档位。
 	// 可选值:""(原图直出,默认)/ "2k"(长边 2560) / "4k"(长边 3840)。
@@ -416,11 +416,15 @@ func (h *ImagesHandler) startAsyncImageRun(job imageAsyncJob) {
 		}
 		refunded := false
 		settled := false
-		refund := func(code string) {
+		refund := func(code string, detail ...string) {
 			rec.Status = usage.StatusFailed
 			rec.ErrorCode = code
 			if h.DAO != nil {
-				_ = h.DAO.MarkFailed(context.Background(), job.TaskID, code)
+				msg := ""
+				if len(detail) > 0 {
+					msg = detail[0]
+				}
+				_ = h.DAO.MarkFailedWithMessage(context.Background(), job.TaskID, code, msg)
 			}
 			if refunded || settled || job.Cost == 0 {
 				return
@@ -472,7 +476,7 @@ func (h *ImagesHandler) startAsyncImageRun(job imageAsyncJob) {
 		rec.AccountID = res.AccountID
 
 		if res.Status != image.StatusSuccess {
-			refund(ifEmpty(res.ErrorCode, "upstream_error"))
+			refund(ifEmpty(res.ErrorCode, "upstream_error"), res.ErrorMessage)
 			return
 		}
 
@@ -545,14 +549,14 @@ func (h *ImagesHandler) ImageTask(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"task_id":          t.TaskID,
-		"status":           t.Status,
-		"conversation_id":  t.ConversationID,
-		"created":          t.CreatedAt.Unix(),
-		"finished_at":      nullableUnix(t.FinishedAt),
-		"error":            t.Error,
-		"credit_cost":      t.CreditCost,
-		"data":             data,
+		"task_id":         t.TaskID,
+		"status":          t.Status,
+		"conversation_id": t.ConversationID,
+		"created":         t.CreatedAt.Unix(),
+		"finished_at":     nullableUnix(t.FinishedAt),
+		"error":           t.Error,
+		"credit_cost":     t.CreditCost,
+		"data":            data,
 	})
 }
 
@@ -743,6 +747,8 @@ func localizeImageErr(code, raw string) string {
 		zh = "账号池暂无可用账号,请稍后重试"
 	case image.ErrRateLimited:
 		zh = "上游风控,请稍后再试"
+	case image.ErrUpstreamRejected:
+		zh = "上游拒绝生成图片"
 	case image.ErrUnknown, "":
 		zh = "图片生成失败"
 	case "upstream_error":

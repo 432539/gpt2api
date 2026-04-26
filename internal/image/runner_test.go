@@ -32,3 +32,29 @@ func TestFilterOutReferenceFileIDs(t *testing.T) {
 		t.Fatalf("filterOutReferenceFileIDs() = %#v, want %#v", got, want)
 	}
 }
+
+func TestTaskErrorDetailKeepsUpstreamMessage(t *testing.T) {
+	got := taskErrorDetail(ErrUpstreamRejected, "非常抱歉，该提示可能违反了关于与第三方内容相似性的防护限制。")
+	want := "upstream_rejected: 非常抱歉，该提示可能违反了关于与第三方内容相似性的防护限制。"
+	if got != want {
+		t.Fatalf("taskErrorDetail() = %q, want %q", got, want)
+	}
+}
+
+func TestTruncateIsRuneSafe(t *testing.T) {
+	got := truncate("非常抱歉abcdef", 4)
+	if got != "非常抱歉" {
+		t.Fatalf("truncate() = %q, want 非常抱歉", got)
+	}
+}
+
+func TestAssistantFailureCode(t *testing.T) {
+	got := assistantFailureCode("非常抱歉，该提示可能违反了防护限制。", ErrPollTimeout)
+	if got != ErrUpstreamRejected {
+		t.Fatalf("assistantFailureCode() = %q, want %q", got, ErrUpstreamRejected)
+	}
+	got = assistantFailureCode("图片仍在生成中", ErrPollTimeout)
+	if got != ErrPollTimeout {
+		t.Fatalf("assistantFailureCode(non-rejection) = %q, want %q", got, ErrPollTimeout)
+	}
+}

@@ -39,7 +39,10 @@ http.interceptors.request.use((config) => {
 http.interceptors.response.use(
   (response) => {
     // 下载类接口直接透传 blob
-    const contentType = response.headers?.['content-type'] || ''
+    const contentTypeValue = response.headers?.['content-type']
+    const contentType = Array.isArray(contentTypeValue)
+      ? contentTypeValue.join(';')
+      : String(contentTypeValue || '')
     if (response.config.responseType === 'blob' || contentType.startsWith('application/gzip')) {
       return response
     }

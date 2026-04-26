@@ -2,16 +2,16 @@
 //
 // 完整链路(和文字聊天共用 f/conversation,只通过 system_hints=["picture_v2"] 区分):
 //
-//	0. (可选) GET /                              → 拿 oai-did cookie
-//	1. POST /backend-api/f/conversation/prepare      → conduit_token
-//	2. POST /backend-api/sentinel/chat-requirements → chat_token + 可选 POW 挑战
-//	3. POST /backend-api/f/conversation (SSE)         → 边解析边收 file-service://
-//	4. SSE 没直出 file-service 时轮询 GET /backend-api/conversation/{id}
-//	   任何一条 tool 消息出现 file-service / sediment asset_pointer 即算成功,
-//	   够 N 张立即返回;IMG2 已正式上线,不再做"灰度命中判定"。
-//	5. GET /backend-api/files/{fid}/download                   → 签名 URL(file-service)
-//	   GET /backend-api/conversation/{cid}/attachment/{sid}/download → 签名 URL(sediment)
-//	6. GET 签名 URL → 图片字节
+//  0. (可选) GET /                              → 拿 oai-did cookie
+//  1. POST /backend-api/f/conversation/prepare      → conduit_token
+//  2. POST /backend-api/sentinel/chat-requirements → chat_token + 可选 POW 挑战
+//  3. POST /backend-api/f/conversation (SSE)         → 边解析边收 file-service://
+//  4. SSE 没直出 file-service 时轮询 GET /backend-api/conversation/{id}
+//     任何一条 tool 消息出现 file-service / sediment asset_pointer 即算成功,
+//     够 N 张立即返回;IMG2 已正式上线,不再做"灰度命中判定"。
+//  5. GET /backend-api/files/{fid}/download                   → 签名 URL(file-service)
+//     GET /backend-api/conversation/{cid}/attachment/{sid}/download → 签名 URL(sediment)
+//  6. GET 签名 URL → 图片字节
 //
 // 注意:不要调用 /backend-api/conversation/init——这是老客户端路径,在免费账号上会
 // 直接 404 让整条链路失败,上游把 picture_v2 路由完全交给 f/conversation 的 payload。
@@ -305,6 +305,7 @@ type ImageSSEResult struct {
 	SedimentIDs    []string // sediment:// 引用(通常是预览,需要轮询)
 	FinishType     string   // finish_details.type(interrupted/stop/...)
 	ImageGenTaskID string
+	AssistantText  string // 没有出图时,assistant 往往会在这里返回拒绝/风控原因
 }
 
 var (
@@ -318,9 +319,12 @@ func ParseImageSSE(stream <-chan SSEEvent) ImageSSEResult {
 	var r ImageSSEResult
 	seenFile := map[string]struct{}{}
 	seenSed := map[string]struct{}{}
+	var textFragments strings.Builder
+	var fullMessages []string
 
 	for ev := range stream {
 		if ev.Err != nil {
+			r.AssistantText = firstNonEmpty(lastText(fullMessages), compactAssistantText(textFragments.String()))
 			return r
 		}
 		data := ev.Data
@@ -328,6 +332,7 @@ func ParseImageSSE(stream <-chan SSEEvent) ImageSSEResult {
 			continue
 		}
 		if string(data) == "[DONE]" {
+			r.AssistantText = firstNonEmpty(lastText(fullMessages), compactAssistantText(textFragments.String()))
 			return r
 		}
 		// 文本正则先扫一遍(比 JSON 解析更健壮)
@@ -350,11 +355,19 @@ func ParseImageSSE(stream <-chan SSEEvent) ImageSSEResult {
 		if err := json.Unmarshal(data, &obj); err != nil {
 			continue
 		}
+		if p, _ := obj["p"].(string); isAssistantTextPath(p) {
+			if v, ok := obj["v"].(string); ok && isUsefulAssistantText(v) {
+				textFragments.WriteString(v)
+			}
+		}
 		if v, ok := obj["v"].(map[string]interface{}); ok {
 			if cid, ok := v["conversation_id"].(string); ok && cid != "" && r.ConversationID == "" {
 				r.ConversationID = cid
 			}
 			if msg, ok := v["message"].(map[string]interface{}); ok {
+				if txt := extractAssistantTextFromMessage(msg); txt != "" {
+					fullMessages = append(fullMessages, txt)
+				}
 				if meta, ok := msg["metadata"].(map[string]interface{}); ok {
 					if tid, ok := meta["image_gen_task_id"].(string); ok {
 						r.ImageGenTaskID = tid
@@ -368,19 +381,100 @@ func ParseImageSSE(stream <-chan SSEEvent) ImageSSEResult {
 			}
 		}
 	}
+	r.AssistantText = firstNonEmpty(lastText(fullMessages), compactAssistantText(textFragments.String()))
 	return r
+}
+
+func isAssistantTextPath(path string) bool {
+	path = strings.ToLower(path)
+	return strings.Contains(path, "message") &&
+		strings.Contains(path, "content") &&
+		strings.Contains(path, "parts")
+}
+
+func extractAssistantTextFromMessage(msg map[string]interface{}) string {
+	author, _ := msg["author"].(map[string]interface{})
+	if author == nil {
+		return ""
+	}
+	if role, _ := author["role"].(string); role != "assistant" {
+		return ""
+	}
+	content, _ := msg["content"].(map[string]interface{})
+	return extractTextContent(content)
+}
+
+func extractTextContent(content map[string]interface{}) string {
+	if content == nil {
+		return ""
+	}
+	texts := make([]string, 0, 2)
+	if text, _ := content["text"].(string); isUsefulAssistantText(text) {
+		texts = append(texts, text)
+	}
+	switch parts := content["parts"].(type) {
+	case []interface{}:
+		for _, p := range parts {
+			switch v := p.(type) {
+			case string:
+				if isUsefulAssistantText(v) {
+					texts = append(texts, v)
+				}
+			case map[string]interface{}:
+				if text, _ := v["text"].(string); isUsefulAssistantText(text) {
+					texts = append(texts, text)
+				}
+			}
+		}
+	case []string:
+		for _, p := range parts {
+			if isUsefulAssistantText(p) {
+				texts = append(texts, p)
+			}
+		}
+	}
+	return compactAssistantText(strings.Join(texts, "\n"))
+}
+
+func isUsefulAssistantText(s string) bool {
+	s = strings.TrimSpace(s)
+	return s != "" &&
+		!strings.Contains(s, "file-service://") &&
+		!strings.Contains(s, "sediment://")
+}
+
+func compactAssistantText(s string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(s)), " ")
+}
+
+func lastText(items []string) string {
+	for i := len(items) - 1; i >= 0; i-- {
+		if s := strings.TrimSpace(items[i]); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func firstNonEmpty(items ...string) string {
+	for _, s := range items {
+		if s = strings.TrimSpace(s); s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // ImageToolMsg 是 conversation.mapping 里一条 IMG2 tool 消息的关键字段。
 type ImageToolMsg struct {
-	MessageID    string
-	CreateTime   float64
-	ModelSlug    string
-	Recipient    string
-	AuthorName   string
+	MessageID     string
+	CreateTime    float64
+	ModelSlug     string
+	Recipient     string
+	AuthorName    string
 	ImageGenTitle string
-	FileIDs      []string // file-service
-	SedimentIDs  []string // sediment
+	FileIDs       []string // file-service
+	SedimentIDs   []string // sediment
 }
 
 // GetConversationMapping 读取会话全量 mapping(轮询用)。
@@ -490,6 +584,42 @@ func ExtractImageToolMsgs(mapping map[string]interface{}) []ImageToolMsg {
 	return out
 }
 
+// ExtractAssistantTextMsgs 从 conversation.mapping 里提取 assistant 文本消息。
+// 生图被上游安全策略/版权相似性等规则拒绝时,通常不会出现 image_gen tool 消息,
+// 而是直接返回一条普通 assistant 文本;调用方用它作为 task.error 的可读原因。
+func ExtractAssistantTextMsgs(mapping map[string]interface{}) []string {
+	type textMsg struct {
+		createTime float64
+		text       string
+	}
+	msgs := make([]textMsg, 0, 4)
+	for _, raw := range mapping {
+		node, _ := raw.(map[string]interface{})
+		if node == nil {
+			continue
+		}
+		msg, _ := node["message"].(map[string]interface{})
+		if msg == nil {
+			continue
+		}
+		text := extractAssistantTextFromMessage(msg)
+		if text == "" {
+			continue
+		}
+		tm := textMsg{text: text}
+		if v, ok := msg["create_time"].(float64); ok {
+			tm.createTime = v
+		}
+		msgs = append(msgs, tm)
+	}
+	sort.SliceStable(msgs, func(i, j int) bool { return msgs[i].createTime < msgs[j].createTime })
+	out := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		out = append(out, m.text)
+	}
+	return out
+}
+
 // PollOpts 控制 PollConversationForImages 的等待策略。
 //
 // IMG2 正式上线后不再做灰度命中判定,逻辑极简化:
@@ -515,9 +645,10 @@ const (
 
 // PollConversationForImages 轮询会话直到图片可用。
 //
-// 返回 (status, file_ids, sediment_ids)。status=success 时 file_ids/sediment_ids 至少一个非空。
+// 返回 (status, file_ids, sediment_ids, assistant_text)。
+// status=success 时 file_ids/sediment_ids 至少一个非空。
 // file-service 优先(优先级更高),sediment 作为补充一并带出,调用方自行决定用几张。
-func (c *Client) PollConversationForImages(ctx context.Context, convID string, opt PollOpts) (PollStatus, []string, []string) {
+func (c *Client) PollConversationForImages(ctx context.Context, convID string, opt PollOpts) (PollStatus, []string, []string, string) {
 	if opt.ExpectedN <= 0 {
 		opt.ExpectedN = 1
 	}
@@ -538,12 +669,13 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 		seenFile       = map[string]struct{}{}
 		seenSed        = map[string]struct{}{}
 		consecutive429 int
+		assistantText  string
 	)
 
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
-			return PollStatusError, nil, nil
+			return PollStatusError, nil, nil, assistantText
 		default:
 		}
 
@@ -552,7 +684,7 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 			if ue, ok := err.(*UpstreamError); ok && ue.Status == 429 {
 				consecutive429++
 				if consecutive429 >= 3 {
-					return PollStatusError, nil, nil
+					return PollStatusError, nil, nil, assistantText
 				}
 				sleep(ctx, 10*time.Second)
 				continue
@@ -561,6 +693,9 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 			continue
 		}
 		consecutive429 = 0
+		if texts := ExtractAssistantTextMsgs(mapping); len(texts) > 0 {
+			assistantText = texts[len(texts)-1]
+		}
 
 		msgs := ExtractImageToolMsgs(mapping)
 		// baseline diff:只看本回合新增 tool 消息
@@ -594,7 +729,7 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 
 		// 够 N 张立即短路返回(file-service 优先占配额,sediment 补位)
 		if len(allFile)+len(allSed) >= opt.ExpectedN {
-			return PollStatusSuccess, allFile, allSed
+			return PollStatusSuccess, allFile, allSed, assistantText
 		}
 
 		sleep(ctx, opt.Interval)
@@ -602,9 +737,9 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 
 	// 超时兜底:只要拿到过至少 1 张,就算成功(速度优先,不等齐 N)
 	if len(allFile)+len(allSed) > 0 {
-		return PollStatusSuccess, allFile, allSed
+		return PollStatusSuccess, allFile, allSed, assistantText
 	}
-	return PollStatusTimeout, nil, nil
+	return PollStatusTimeout, nil, nil, assistantText
 }
 
 // getMappingRaw 拉 conversation 并返回 mapping。
