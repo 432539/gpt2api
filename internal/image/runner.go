@@ -552,6 +552,11 @@ afterSSE:
 				return false, assistantFailureCode(msg, ErrPollTimeout), errors.New(msg)
 			}
 			return false, ErrPollTimeout, errors.New("poll timeout without any image")
+		case chatgpt.PollStatusRejected:
+			if msg := firstFilled(assistantText, sseResult.AssistantText); msg != "" {
+				return false, ErrUpstreamRejected, errors.New(msg)
+			}
+			return false, ErrUpstreamRejected, errors.New("upstream rejected image generation")
 		default:
 			if msg := firstFilled(assistantText, sseResult.AssistantText); msg != "" {
 				return false, assistantFailureCode(msg, ErrUpstream), errors.New(msg)

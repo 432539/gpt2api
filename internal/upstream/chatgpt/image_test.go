@@ -2,7 +2,9 @@ package chatgpt
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -102,6 +104,53 @@ func TestPollConversationForImagesReturnsErrorWithoutConversationID(t *testing.T
 	}
 	if time.Since(start) > time.Second {
 		t.Fatalf("empty convID should fail fast, took %s", time.Since(start))
+	}
+}
+
+func TestPollConversationForImagesReturnsRejectedOnAssistantRefusal(t *testing.T) {
+	conversation := map[string]interface{}{
+		"mapping": map[string]interface{}{
+			"assistant": map[string]interface{}{
+				"message": map[string]interface{}{
+					"create_time": float64(1),
+					"author":      map[string]interface{}{"role": "assistant"},
+					"content": map[string]interface{}{
+						"content_type": "text",
+						"parts": []interface{}{
+							"非常抱歉，该提示可能违反了关于与第三方内容相似性的防护限制。如果你认为此判断有误，请重试或修改提示语。",
+						},
+					},
+				},
+			},
+		},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/conversation/conv_rejected" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(conversation)
+	}))
+	defer srv.Close()
+
+	c := &Client{opts: Options{BaseURL: srv.URL}, hc: srv.Client()}
+	start := time.Now()
+	status, fids, sids, assistantText := c.PollConversationForImages(
+		context.Background(),
+		"conv_rejected",
+		PollOpts{MaxWait: time.Hour, Interval: time.Hour},
+	)
+
+	if status != PollStatusRejected {
+		t.Fatalf("status = %q, want %q", status, PollStatusRejected)
+	}
+	if len(fids) != 0 || len(sids) != 0 {
+		t.Fatalf("unexpected image refs: fids=%v sids=%v", fids, sids)
+	}
+	if assistantText == "" {
+		t.Fatalf("assistantText is empty")
+	}
+	if time.Since(start) > time.Second {
+		t.Fatalf("rejection should fail fast, took %s", time.Since(start))
 	}
 }
 

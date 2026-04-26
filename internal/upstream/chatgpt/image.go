@@ -639,9 +639,10 @@ type PollOpts struct {
 type PollStatus string
 
 const (
-	PollStatusSuccess PollStatus = "success" // 至少拿到 1 张图
-	PollStatusTimeout PollStatus = "timeout" // 等到 MaxWait 仍然 0 张
-	PollStatusError   PollStatus = "error"   // 上游错误(429 熔断 / ctx 取消)
+	PollStatusSuccess  PollStatus = "success"  // 至少拿到 1 张图
+	PollStatusTimeout  PollStatus = "timeout"  // 等到 MaxWait 仍然 0 张
+	PollStatusError    PollStatus = "error"    // 上游错误(429 熔断 / ctx 取消)
+	PollStatusRejected PollStatus = "rejected" // 上游明确返回拒绝/安全策略文本
 )
 
 // PollConversationForImages 轮询会话直到图片可用。
@@ -735,6 +736,9 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 		if len(allFile)+len(allSed) >= opt.ExpectedN {
 			return PollStatusSuccess, allFile, allSed, assistantText
 		}
+		if isTerminalImageRejectionText(assistantText) {
+			return PollStatusRejected, nil, nil, assistantText
+		}
 
 		sleep(ctx, opt.Interval)
 	}
@@ -744,6 +748,29 @@ func (c *Client) PollConversationForImages(ctx context.Context, convID string, o
 		return PollStatusSuccess, allFile, allSed, assistantText
 	}
 	return PollStatusTimeout, nil, nil, assistantText
+}
+
+func isTerminalImageRejectionText(s string) bool {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" {
+		return false
+	}
+	strong := []string{
+		"违反", "防护限制", "安全策略", "政策", "无法生成", "不能生成", "不可以生成",
+		"policy", "safety", "cannot generate", "can't generate", "unable to generate",
+	}
+	for _, kw := range strong {
+		if strings.Contains(s, kw) {
+			return strings.Contains(s, "抱歉") ||
+				strings.Contains(s, "无法") ||
+				strings.Contains(s, "不能") ||
+				strings.Contains(s, "sorry") ||
+				strings.Contains(s, "cannot") ||
+				strings.Contains(s, "can't") ||
+				strings.Contains(s, "unable")
+		}
+	}
+	return false
 }
 
 // getMappingRaw 拉 conversation 并返回 mapping。
