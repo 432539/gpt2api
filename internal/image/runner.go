@@ -421,6 +421,9 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 	if sseResult.ConversationID != "" {
 		convID = sseResult.ConversationID
 		result.ConversationID = convID
+		if r.dao != nil && opt.TaskID != "" {
+			_ = r.dao.SetConversationID(ctx, opt.TaskID, convID)
+		}
 	}
 
 	logger.L().Info("image runner SSE parsed",
@@ -468,6 +471,20 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 			zap.String("task_id", opt.TaskID),
 			zap.Uint64("account_id", lease.Account.ID),
 			zap.String("conv_id", convID),
+			zap.Int("refs", len(fileRefs)),
+			zap.Strings("refs_list", fileRefs),
+		)
+	} else if convID == "" {
+		if len(fileRefs) == 0 {
+			if msg := strings.TrimSpace(sseResult.AssistantText); msg != "" {
+				return false, assistantFailureCode(msg, ErrInvalidResponse), errors.New(msg)
+			}
+			return false, ErrInvalidResponse, errors.New("upstream returned no conversation_id and no image ref")
+		}
+		// 有部分 file-service 结果但没有 conversation_id 时无法继续 poll;直接使用已拿到的图。
+		logger.L().Warn("image runner skip polling without conversation_id",
+			zap.String("task_id", opt.TaskID),
+			zap.Uint64("account_id", lease.Account.ID),
 			zap.Int("refs", len(fileRefs)),
 			zap.Strings("refs_list", fileRefs),
 		)

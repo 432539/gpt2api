@@ -62,6 +62,19 @@ func (d *DAO) SetAccount(ctx context.Context, taskID string, accountID uint64) e
 	return err
 }
 
+// SetConversationID 在任务运行中提前写入上游 conversation_id,便于轮询端看到进度。
+func (d *DAO) SetConversationID(ctx context.Context, taskID, convID string) error {
+	if convID == "" {
+		return nil
+	}
+	_, err := d.db.ExecContext(ctx, `
+UPDATE image_tasks
+   SET conversation_id = ?
+ WHERE task_id = ?
+   AND conversation_id = ''`, convID, taskID)
+	return err
+}
+
 // MarkSuccess 更新成功状态。
 func (d *DAO) MarkSuccess(ctx context.Context, taskID, convID string, fileIDs, resultURLs []string, creditCost int64) error {
 	fidB, _ := json.Marshal(fileIDs)
@@ -97,6 +110,22 @@ UPDATE image_tasks
    SET status='failed', error=?, finished_at=NOW()
  WHERE task_id=?`, truncate(taskErrorDetail(errorCode, errorMessage), 500), taskID)
 	return err
+}
+
+// MarkStaleFailed 把超出运行窗口仍未结束的任务标记为失败,用于查询端兜底清理。
+func (d *DAO) MarkStaleFailed(ctx context.Context, taskID string, cutoff time.Time, errorCode, errorMessage string) (bool, error) {
+	res, err := d.db.ExecContext(ctx, `
+UPDATE image_tasks
+   SET status='failed', error=?, finished_at=NOW()
+ WHERE task_id=?
+   AND status IN ('queued','dispatched','running')
+   AND COALESCE(started_at, created_at) < ?`,
+		truncate(taskErrorDetail(errorCode, errorMessage), 500), taskID, cutoff)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 // Get 根据对外 task_id 查询。

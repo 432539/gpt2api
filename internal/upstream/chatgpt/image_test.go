@@ -1,6 +1,10 @@
 package chatgpt
 
-import "testing"
+import (
+	"context"
+	"testing"
+	"time"
+)
 
 func TestParseImageSSECapturesAssistantRefusalMessage(t *testing.T) {
 	stream := make(chan SSEEvent, 2)
@@ -77,5 +81,25 @@ func TestExtractAssistantTextMsgsIgnoresUserAndAssets(t *testing.T) {
 	}
 	if got[0] != "如果你认为此判断有误，请重试或修改提示语。" {
 		t.Fatalf("message = %q", got[0])
+	}
+}
+
+func TestPollConversationForImagesReturnsErrorWithoutConversationID(t *testing.T) {
+	var c Client
+	start := time.Now()
+	status, fids, sids, assistantText := c.PollConversationForImages(
+		context.Background(),
+		"",
+		PollOpts{MaxWait: time.Hour},
+	)
+
+	if status != PollStatusError {
+		t.Fatalf("status = %q, want %q", status, PollStatusError)
+	}
+	if len(fids) != 0 || len(sids) != 0 || assistantText != "" {
+		t.Fatalf("unexpected result: fids=%v sids=%v text=%q", fids, sids, assistantText)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatalf("empty convID should fail fast, took %s", time.Since(start))
 	}
 }

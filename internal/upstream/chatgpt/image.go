@@ -649,6 +649,9 @@ const (
 // status=success 时 file_ids/sediment_ids 至少一个非空。
 // file-service 优先(优先级更高),sediment 作为补充一并带出,调用方自行决定用几张。
 func (c *Client) PollConversationForImages(ctx context.Context, convID string, opt PollOpts) (PollStatus, []string, []string, string) {
+	if strings.TrimSpace(convID) == "" {
+		return PollStatusError, nil, nil, ""
+	}
 	if opt.ExpectedN <= 0 {
 		opt.ExpectedN = 1
 	}

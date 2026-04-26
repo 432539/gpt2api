@@ -31,6 +31,9 @@ const maxReferenceImageBytes = 20 * 1024 * 1024
 // 同一次请求最多携带的参考图数量。
 const maxReferenceImages = 4
 
+// 异步 Runner 外层超时 7 分钟;查询端多留一点缓冲后把遗留 running 任务兜底置失败。
+const imageTaskStaleAfter = 8 * time.Minute
+
 // chatMsg 是 OpenAI chat message 的本地别名,便于 handleChatAsImage 内部表达。
 type chatMsg = chatgpt.ChatMessage
 
@@ -536,6 +539,24 @@ func (h *ImagesHandler) ImageTask(c *gin.Context) {
 		openAIError(c, http.StatusNotFound, "not_found", "任务不存在")
 		return
 	}
+	now := time.Now()
+	if isStaleImageTask(t, now) {
+		updated, err := h.DAO.MarkStaleFailed(c.Request.Context(), t.TaskID,
+			now.Add(-imageTaskStaleAfter),
+			image.ErrPollTimeout,
+			"image task exceeded async runner timeout; worker may have exited before writing final status")
+		if err != nil {
+			openAIError(c, http.StatusInternalServerError, "internal_error", "更新超时任务失败:"+err.Error())
+			return
+		}
+		if updated {
+			t, err = h.DAO.Get(c.Request.Context(), id)
+			if err != nil {
+				openAIError(c, http.StatusInternalServerError, "internal_error", "查询任务失败:"+err.Error())
+				return
+			}
+		}
+	}
 
 	urls := t.DecodeResultURLs()
 	data := make([]ImageGenData, 0, len(urls))
@@ -767,6 +788,22 @@ func nullableUnix(t *time.Time) int64 {
 		return 0
 	}
 	return t.Unix()
+}
+
+func isStaleImageTask(t *image.Task, now time.Time) bool {
+	if t == nil {
+		return false
+	}
+	switch t.Status {
+	case image.StatusQueued, image.StatusDispatched, image.StatusRunning:
+	default:
+		return false
+	}
+	base := t.CreatedAt
+	if t.StartedAt != nil && !t.StartedAt.IsZero() {
+		base = *t.StartedAt
+	}
+	return now.Sub(base) > imageTaskStaleAfter
 }
 
 // 含这些关键字时,追加中英双约束让上游出字更清楚(迁移自 gen_image.py)。
