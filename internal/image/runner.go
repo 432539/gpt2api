@@ -409,15 +409,32 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 	}
 
 	// f/conversation SSE
+	var sseResult chatgpt.ImageSSEResult
 	stream, err := cli.StreamFConversation(ctx, convOpt)
 	if err != nil {
+		var ue *chatgpt.UpstreamError
+		if errors.As(err, &ue) && upstreamBodySkippedMainline(ue.Body) {
+			if cid := ue.ConversationID(); cid != "" {
+				convID = cid
+				result.ConversationID = convID
+				if r.dao != nil && opt.TaskID != "" {
+					_ = r.dao.SetConversationID(ctx, opt.TaskID, convID)
+				}
+				logger.L().Info("image runner f/conversation skipped mainline, continue polling",
+					zap.String("task_id", opt.TaskID),
+					zap.Uint64("account_id", lease.Account.ID),
+					zap.String("conv_id", convID))
+				goto afterSSE
+			}
+			return false, ErrInvalidResponse, errors.New("upstream skipped mainline without conversation_id")
+		}
 		code := r.classifyUpstream(err)
 		if code == ErrRateLimited {
 			r.sched.MarkRateLimited(context.Background(), lease.Account.ID)
 		}
 		return false, code, err
 	}
-	sseResult := chatgpt.ParseImageSSE(stream)
+	sseResult = chatgpt.ParseImageSSE(stream)
 	if sseResult.ConversationID != "" {
 		convID = sseResult.ConversationID
 		result.ConversationID = convID
@@ -426,6 +443,7 @@ func (r *Runner) runOnce(ctx context.Context, opt RunOptions, result *RunResult)
 		}
 	}
 
+afterSSE:
 	logger.L().Info("image runner SSE parsed",
 		zap.String("task_id", opt.TaskID),
 		zap.Uint64("account_id", lease.Account.ID),
@@ -671,6 +689,9 @@ func upstreamErrorBodyMessage(body string) string {
 	if err := json.Unmarshal([]byte(body), &obj); err != nil {
 		return ""
 	}
+	if skippedMainline(obj) {
+		return "上游跳过主响应流程;图片可能仍在会话工具链路中生成,但本次未能取得结果"
+	}
 	if msg := stringField(obj, "message"); msg != "" {
 		return msg
 	}
@@ -689,6 +710,26 @@ func upstreamErrorBodyMessage(body string) string {
 		}
 	}
 	return ""
+}
+
+func upstreamBodySkippedMainline(body string) bool {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return false
+	}
+	var obj map[string]interface{}
+	if err := json.Unmarshal([]byte(body), &obj); err != nil {
+		return false
+	}
+	return skippedMainline(obj)
+}
+
+func skippedMainline(obj map[string]interface{}) bool {
+	if obj == nil {
+		return false
+	}
+	v, _ := obj["skipped_mainline"].(bool)
+	return v
 }
 
 func stringField(m map[string]interface{}, key string) string {

@@ -290,8 +290,9 @@ func (c *Client) StreamFConversation(ctx context.Context, opt ImageConvOpts) (<-
 	}
 	if res.StatusCode >= 400 {
 		buf, _ := io.ReadAll(res.Body)
+		header := res.Header.Clone()
 		res.Body.Close()
-		return nil, &UpstreamError{Status: res.StatusCode, Message: "f/conversation failed", Body: string(buf)}
+		return nil, &UpstreamError{Status: res.StatusCode, Message: "f/conversation failed", Body: string(buf), Header: header}
 	}
 	out := make(chan SSEEvent, 64)
 	go parseSSE(res.Body, out, opt.SSETimeout)

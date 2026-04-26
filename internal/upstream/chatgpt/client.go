@@ -200,10 +200,41 @@ type UpstreamError struct {
 	Status  int
 	Message string
 	Body    string
+	Header  http.Header
 }
 
 func (e *UpstreamError) Error() string {
 	return fmt.Sprintf("chatgpt upstream %d: %s", e.Status, e.Message)
+}
+
+// ConversationID 尽量从上游错误响应里取出已创建的 conversation_id。
+// 某些 f/conversation 响应会返回 skipped_mainline,但图片工具链路仍在会话里继续跑。
+func (e *UpstreamError) ConversationID() string {
+	if e == nil {
+		return ""
+	}
+	for _, key := range []string{
+		"Openai-Conversation-Id",
+		"Oai-Conversation-Id",
+		"X-Openai-Conversation-Id",
+		"X-Oai-Conversation-Id",
+		"X-Conversation-Id",
+		"Conversation-Id",
+	} {
+		if v := strings.TrimSpace(e.Header.Get(key)); v != "" {
+			return v
+		}
+	}
+	var obj map[string]interface{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(e.Body)), &obj); err != nil {
+		return ""
+	}
+	for _, key := range []string{"conversation_id", "conversationId", "conversationID"} {
+		if v, _ := obj[key].(string); strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }
 
 // IsRateLimited 对应 HTTP 429 / 资源耗尽。

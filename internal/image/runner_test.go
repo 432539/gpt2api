@@ -58,3 +58,16 @@ func TestAssistantFailureCode(t *testing.T) {
 		t.Fatalf("assistantFailureCode(non-rejection) = %q, want %q", got, ErrPollTimeout)
 	}
 }
+
+func TestSkippedMainlineIsNotClassifiedAsRejected(t *testing.T) {
+	err := &chatgpt.UpstreamError{Status: 400, Message: "f/conversation failed", Body: `{"skipped_mainline":true}`}
+	var r Runner
+	if got := r.classifyUpstream(err); got != ErrUpstream {
+		t.Fatalf("classifyUpstream() = %q, want %q", got, ErrUpstream)
+	}
+
+	msg := runnerErrorMessage(err)
+	if msg == "" || msg == `{"skipped_mainline":true}` {
+		t.Fatalf("runnerErrorMessage() = %q, want friendly message", msg)
+	}
+}

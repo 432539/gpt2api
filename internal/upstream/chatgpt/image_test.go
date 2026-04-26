@@ -2,6 +2,7 @@ package chatgpt
 
 import (
 	"context"
+	"net/http"
 	"testing"
 	"time"
 )
@@ -101,5 +102,17 @@ func TestPollConversationForImagesReturnsErrorWithoutConversationID(t *testing.T
 	}
 	if time.Since(start) > time.Second {
 		t.Fatalf("empty convID should fail fast, took %s", time.Since(start))
+	}
+}
+
+func TestUpstreamErrorConversationIDFromHeaderAndBody(t *testing.T) {
+	err := &UpstreamError{Header: http.Header{"Openai-Conversation-Id": []string{"conv_header"}}}
+	if got := err.ConversationID(); got != "conv_header" {
+		t.Fatalf("header ConversationID() = %q, want conv_header", got)
+	}
+
+	err = &UpstreamError{Body: `{"skipped_mainline":true,"conversation_id":"conv_body"}`}
+	if got := err.ConversationID(); got != "conv_body" {
+		t.Fatalf("body ConversationID() = %q, want conv_body", got)
 	}
 }

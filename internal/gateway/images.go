@@ -765,17 +765,17 @@ func localizeImageErr(code, raw string) string {
 	var zh string
 	switch code {
 	case image.ErrNoAccount:
-		zh = "账号池暂无可用账号,请稍后重试"
+		zh = "No available accounts in the pool, please try again later"
 	case image.ErrRateLimited:
-		zh = "上游风控,请稍后再试"
+		zh = "Upstream rate limited, please try again later"
 	case image.ErrUpstreamRejected:
-		zh = "上游拒绝生成图片"
+		zh = "Upstream rejected the image generation request"
 	case image.ErrUnknown, "":
-		zh = "图片生成失败"
+		zh = "Image generation failed"
 	case "upstream_error":
-		zh = "上游返回错误"
+		zh = "Upstream returned an error"
 	default:
-		zh = "图片生成失败(" + code + ")"
+		zh = "Image generation failed (" + code + ")"
 	}
 	if raw != "" && raw != code {
 		return zh + ":" + raw
