@@ -133,7 +133,7 @@ flowchart LR
     SDK["OpenAI SDK / curl / 自家业务"]
   end
 
-  subgraph Gateway["gpt2api Server :8080"]
+  subgraph Gateway["gpt2api Server :18080"]
     direction TB
     API["Gin Router<br/>/v1/* · /api/*"]
     Auth["APIKey / JWT<br/>RPM · TPM · IP 白名单"]
@@ -294,13 +294,13 @@ docker compose logs -f server
 
 1. 等 `mysql` 健康;
 2. 跑 `goose up` 应用全部迁移(用户 / 账号 / 审计 / 备份元数据等十余张表);
-3. 启动 HTTP 服务 `:8080`。
+3. 启动 HTTP 服务 `:18080`。
 
 > ### ⚠️ 没有默认账号 / 密码 —— 首位注册者自动成为管理员
 >
 > **本项目 *不* 预置任何"默认管理员账号"或"默认密码"。** 部署起来后请按以下步骤走:
 >
-> 1. 浏览器打开 **`http://<服务器IP>:8080/register`**
+> 1. 浏览器打开 **`http://<服务器IP>:18080/register`**
 > 2. 用自己的邮箱 + 自设密码完成第一次注册
 > 3. **这第一个账号会自动拿到 `admin` 角色**(见 `internal/auth/service.go` 的 `Register` Bootstrap 规则)
 > 4. 之后再注册的账号都是普通用户
@@ -310,7 +310,7 @@ docker compose logs -f server
 
 ### 5. 首次登录
 
-- 前端站点地址:`http://<服务器IP>:8080/`
+- 前端站点地址:`http://<服务器IP>:18080/`
 - 按上面的 ⚠️ 框完成首位 admin 注册即可登录。
 - 忘记管理员密码、或需要把某个普通用户提权为 admin,见「FAQ · 管理员密码找回 / 提权」。
 
@@ -711,7 +711,7 @@ make run
 ```bash
 cd web
 npm install
-npm run dev          # http://localhost:5173,自动代理到 :8080
+npm run dev          # http://localhost:5173,自动代理到 :18080
 npm run build        # 构建到 web/dist/,供后端 SPA 路由挂载
 ```
 

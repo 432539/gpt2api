@@ -42,7 +42,7 @@ npm run smoke
 
 ```bash
 node scripts/smoke.mjs \
-  --base http://localhost:8080 \
+  --base http://localhost:18080 \
   --admin-email admin@smoke.test \
   --admin-pass  Admin123456 \
   --user-email  user@smoke.test \
@@ -74,9 +74,8 @@ GitHub Actions 示例骨架:
   run: docker compose -f deploy/docker-compose.yml up -d --wait
 
 - name: wait backend
-  run: curl --retry 30 --retry-delay 2 --retry-connrefused http://localhost:8080/healthz
+  run: curl --retry 30 --retry-delay 2 --retry-connrefused http://localhost:18080/healthz
 
 - name: smoke
-  run: node scripts/smoke.mjs --base http://localhost:8080
+  run: node scripts/smoke.mjs --base http://localhost:18080
 ```
-

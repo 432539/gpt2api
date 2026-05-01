@@ -8,6 +8,6 @@
   },
   "scripts": {
     "smoke": "node smoke.mjs",
-    "smoke:docker": "node smoke.mjs --base http://localhost:8080"
+    "smoke:docker": "node smoke.mjs --base http://localhost:18080"
   }
 }

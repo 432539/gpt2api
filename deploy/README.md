@@ -4,7 +4,7 @@
 
 1. 等 MySQL 健康
 2. 跑 `goose up` 应用所有迁移(包含用户表、账号池、审计、备份元数据等)
-3. 启动 HTTP 服务(`:8080`)
+3. 启动 HTTP 服务(`:18080`)
 
 ## ⚠️ 架构说明:宿主预编译 + 容器运行
 
@@ -57,7 +57,7 @@ docker compose up -d
 docker compose logs -f server  # 观察迁移 + 启动日志
 ```
 
-> **⚠️ 没有默认账号 / 密码。** 启动完成后打开 `http://<服务器IP>:8080/register` 注册,
+> **⚠️ 没有默认账号 / 密码。** 启动完成后打开 `http://<服务器IP>:18080/register` 注册,
 > **第一个注册的账号自动成为 admin**;之后的注册都是普通用户。建议首位 admin 登录后去
 > **管理后台 → 系统设置**关闭"允许开放注册"。详见仓库根 `README.md`「5. 首次登录」。
 
@@ -76,7 +76,7 @@ docker compose logs -f server  # 观察迁移 + 启动日志
 
 | 服务     | 端口     | 说明                   |
 | ------ | ------ | -------------------- |
-| server | `8080` | OpenAI 兼容网关 + 后台 API |
+| server | `18080` | OpenAI 兼容网关 + 后台 API |
 | mysql  | `3306` | 业务数据库                |
 | redis  | `6379` | 锁 / 限流 / 缓存          |
 
@@ -151,4 +151,3 @@ docker compose exec server mysqldump -hmysql -ugpt2api -p \
 - `server` 可直接 `docker compose up -d --scale server=3`(需前面加 nginx/traefik)
 - `backups` 卷改成共享存储(NFS / S3 fuse),否则每个副本只能看到自己创建的备份
 - Redis 分布式锁已天然支持多副本,MySQL 和 JWT 密钥需统一
-

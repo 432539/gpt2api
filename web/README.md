@@ -14,7 +14,7 @@ npm install        # 或 pnpm install / yarn
 npm run dev        # http://localhost:5173
 ```
 
-开发服务器通过 Vite 代理 `/api`、`/v1`、`/healthz` 到后端(默认 `http://localhost:8080`)。
+开发服务器通过 Vite 代理 `/api`、`/v1`、`/healthz` 到后端(默认 `http://localhost:18080`)。
 改成别的后端:在 `web/.env.development` 里调整 `VITE_API_BASE`。
 
 ## 生产构建

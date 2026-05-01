@@ -17,7 +17,7 @@
  *
  * 使用:
  *   node scripts/smoke.mjs \
- *     --base http://localhost:8080 \
+ *     --base http://localhost:18080 \
  *     --admin-email   admin@smoke.test \
  *     --admin-pass    Admin123456 \
  *     --user-email    user@smoke.test \
@@ -40,7 +40,7 @@ import { writeFile } from 'node:fs/promises'
 
 // ---------- 参数 ----------
 const args = parseArgs(argv.slice(2))
-const BASE = stripSlash(args['base'] || env.GPT2API_BASE || 'http://localhost:8080')
+const BASE = stripSlash(args['base'] || env.GPT2API_BASE || 'http://localhost:18080')
 const ADMIN_EMAIL = args['admin-email'] || `admin+${Date.now()}@smoke.test`
 const ADMIN_PASS  = args['admin-pass']  || 'Admin123456'
 const USER_EMAIL  = args['user-email']  || `user+${Date.now()}@smoke.test`
