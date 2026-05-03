@@ -1,0 +1,105 @@
+---
+description: KleinAI 后端 Go 代码规范，仅针对 backend/ 目录生效。
+globs:
+  - backend/**/*.go
+  - backend/**/*.yaml
+  - backend/**/*.yml
+  - backend/migrations/**/*.sql
+  - backend/Makefile
+---
+
+# KleinAI · 后端代码规则
+
+> 详见 `docs/02-后端规范.md` 与 `docs/03-数据库设计.md`
+
+## 入口（cmd/）
+
+- 4 个独立 main：`cmd/api`（用户）、`cmd/admin`（后台）、`cmd/openai`（OpenAI 兼容）、`cmd/worker`（异步任务）
+- **严禁** cmd/* 互相 import；共享通过 `internal/` 与 `pkg/`
+- 监听端口：`api=17180`、`admin=17188`、`openai=17200`，worker 不监听
+
+## 分层（**铁律**）
+
+```
+handler → service → repo → model
+```
+
+- handler 仅做：参数绑定 + 调 service + 组装响应
+- service：业务编排 + 事务边界 + 幂等控制；**唯一**事务入口
+- repo：DB 访问，零业务判断；**禁止** `SELECT *`
+- model：GORM 实体 + `TableName()`，字段必须带 `gorm` tag
+
+## 错误处理
+
+- 错误必须返回 `*errcode.Error`
+- 业务错误码段位：100 用户/鉴权 · 200 账号池 · 300 创作 · 400 计费 · 500 邀请 · 600 后台 · 700 文件 · 900 第三方
+- 错误必须 `errors.Wrap` / `fmt.Errorf("%w")`，禁止裸 `_ = err`
+- 禁止 `panic`（仅 init 致命错误例外）
+
+## 上下文与日志
+
+- 函数第一参数 `ctx context.Context`
+- DB / Redis / HTTP 调用必须带 `ctx`
+- 日志用 `pkg/logger`，**禁止** `fmt.Println` / `log.Println`
+- 关键日志必须含 `trace_id / user_id / route / latency`
+- 严禁打印明文密钥 / 密码 / token / cookie
+
+## 依赖
+
+仅允许使用以下依赖（添加新依赖必须 PR 说明 + `govulncheck` 通过）：
+
+```
+gin-gonic/gin
+gorm.io/gorm + gorm.io/driver/mysql
+go.uber.org/zap + lumberjack
+spf13/viper
+golang-jwt/jwt/v5
+redis/go-redis/v9
+hibiken/asynq
+go-playground/validator/v10
+go-resty/resty/v2
+bwmarrin/snowflake
+golang.org/x/crypto
+go-redis/redis_rate/v10
+stretchr/testify
+```
+
+## 数值与时间
+
+- 金额 / 点数：`int64`，最小单位 `0.01`（`*100` 存）；**禁止** float
+- 时间：`time.Time` UTC 存储，业务层转 `Asia/Shanghai`
+
+## 数据库
+
+- 所有表带 `id BIGINT UNSIGNED AUTO_INCREMENT` + `created_at` + `updated_at` + `deleted_at`（除非有特殊说明）
+- 业务唯一标识：`uuid CHAR(36)` 或 雪花 `BIGINT` + 唯一索引
+- 命名 `snake_case`；索引 `idx_xxx` / `uk_xxx`
+- 禁止外键约束
+- GORM 必须 `Select` 字段
+- 大表（`request_log` 等）按月分区
+
+## 账号池
+
+- 表：`account` / `account_group` / `account_group_member` / `account_health`
+- 凭证字段 `credential_enc` 用 AES-256-GCM 加密
+- 调度策略：`RoundRobin / WeightedRR / LeastUsed / LowestErrRate`，运行时可热切（`system_config.pool.strategy`）
+- 熔断：连续失败 ≥ 5 次进入 cooldown 10min；再失败进 disabled
+- 健康检查：worker 每 5 分钟跑一次低成本接口
+
+## 计费
+
+- 流程：**预扣 → 调用 Provider → 失败退点**，全在事务 + 幂等键控制内
+- 表：`wallet_log`（总账）+ `recharge_record` + `consume_record` + `refund_record`
+- 用户端余额字段：`points` 可用 + `frozen_points` 冻结
+
+## 限流
+
+- 用 Redis（`redis_rate`），不用本地令牌桶
+- 三道：IP / UID / API Key
+- 429 响应必须返回 `Retry-After` + `X-RateLimit-*` 头
+
+## 测试
+
+- 单测覆盖率：service ≥ 70%，pool / biller ≥ 90%
+- `go test ./... -race -count=1` 必须通过
+- 外部 Provider **必须** mock；`_test.go` 不允许依赖外网

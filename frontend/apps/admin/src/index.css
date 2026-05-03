@@ -1,0 +1,24 @@
+@import '@kleinai/theme/components.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===========================================================
+   admin app · 仅保留站点级覆盖；
+   按钮 / 表单 / 卡片 / 文字 等统一在 @kleinai/theme/components.css
+   =========================================================== */
+
+@layer base {
+  /* 管理后台默认浅色，正文略紧凑，提升表格可读性 */
+  body {
+    line-height: 1.5;
+  }
+}
+
+@layer components {
+  /* 后台 layout 内可滚动主体 */
+  .admin-pane {
+    @apply rounded-lg border border-border bg-surface-1 shadow-1;
+  }
+}

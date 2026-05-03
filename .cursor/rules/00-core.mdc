@@ -1,0 +1,120 @@
+---
+description: KleinAI 项目核心规范（始终生效）。包含技术栈、端口、克莱因蓝主题、命名、安全基线。
+alwaysApply: true
+---
+
+# KleinAI · 核心规范（始终生效）
+
+> 完整规范：`docs/01-开发规范-总览.md` ~ `docs/06-部署与运维规范.md`
+> 进度看板：`PROGRESS.md`（每完成一项需同步更新）
+
+## 项目定位
+
+- **业务**：批量管理 GPT / GROK 账号池，提供「**生图（GPT）+ 生视频（GROK）**」一站式 AIGC 平台
+- **代号**：KleinAI（克莱因蓝主题）
+- **形态**：用户端 Web + 移动 H5 + 管理后台 + OpenAI 兼容开放 API
+
+## 技术栈（不可随意更换）
+
+| 层 | 选型 |
+|----|------|
+| 后端 | **Go 1.22 + Gin + GORM + MySQL 8 + Redis 7 + Asynq** |
+| 前端 | **React 18 + Vite + TypeScript + Tailwind v4 + shadcn/ui** |
+| 状态 | Zustand + TanStack Query v5 |
+| 部署 | Docker Compose（单机）→ K8s（规模化）+ Nginx |
+
+## 端口规范（**铁律**：不准用常用端口）
+
+> 严禁使用 `22 / 80 / 443 / 3306 / 6379 / 8080 / 8888 / 3000 / 5000 / 9000`
+
+| 用途 | 端口 |
+|------|------|
+| 用户端 Web（HTTPS） | **17080** |
+| 管理后台 Web（HTTPS） | **17088** |
+| OpenAI 兼容 API（HTTPS） | **17200** |
+| WebSocket | **17280** |
+| 用户 API（内网） | **17180** |
+| 管理后台 API（内网） | **17188** |
+| MySQL | **13306** |
+| Redis | **16379** |
+| Asynq Web | **17390** |
+| Prometheus / Grafana | **17490 / 17491** |
+| pprof | **17590** |
+| Swagger | **17690** |
+
+## 克莱因蓝主题（**铁律**：禁止硬编码颜色）
+
+- 主色：克莱因蓝 IKB `#002FA7`（`--klein-600`）
+- 高光：电光蓝 `#1E3DFF`（`--klein-500`）
+- 渐变：`linear-gradient(135deg, #002FA7 0%, #1E3DFF 100%)`
+- 深色优先：创作页面默认 `data-theme="dark"`
+- 所有颜色 / 圆角 / 阴影 / 间距 **必须**走 CSS Variables 或 Tailwind token，**禁止**内联 `style={{ color: '#xxx' }}`
+- token 定义统一在 `frontend/packages/theme/src/tokens.css`
+
+## 多终端响应式（**铁律**）
+
+- 断点：`xs 480 / sm 640 / md 768 / lg 1024 / xl 1280 / 2xl 1536 / 3xl 1920 / 4xl 2560`
+- 字号必须用 `clamp()`（已在 Tailwind preset 内置 `text-h1` 等）
+- 网格优先 `auto-fill minmax()` + 容器查询 `@container`
+- 安全区：底部容器加 `padding-bottom: max(16px, env(safe-area-inset-bottom))`
+- 触控热区 ≥ 44×44
+
+## 命名规范（**铁律**）
+
+| 对象 | 规则 |
+|------|------|
+| Go 包 / 目录 | 小写无下划线 `accountpool` |
+| Go 文件 | `snake_case.go` |
+| Go 类型 | `PascalCase` 公开 / `camelCase` 私有 |
+| 数据库 表/字段 | `snake_case` |
+| API 路径 | `kebab-case` |
+| 前端组件 | `PascalCase.tsx` |
+| 前端 hook | `useXxx.ts` |
+| 环境变量 | `KLEIN_*` 大写下划线 |
+
+## 后端铁律
+
+1. **分层**：`handler → service → repo → model`，**严禁反向 / 横向调用**（service 不调 service，要拆抽象）
+2. **事务**：仅在 service 层开启；handler / repo **不允许**开事务
+3. **幂等**：所有写操作必须支持 `Idempotency-Key`
+4. **金额 / 点数**：`int64` 存最小单位（`*100`），**禁止** float
+5. **越权防护**：用户端接口 SQL 必须显式 `WHERE user_id = ?`
+6. **错误返回**：必须返回 `*errcode.Error`，由 `response.Fail` 统一渲染
+7. **context**：必须作为函数第一参数；DB / Redis / HTTP 调用必须带 `ctx`
+8. **日志**：用 `pkg/logger`，**禁止** `fmt.Println` / `log.Println`
+9. **外部 HTTP**：必须经 `internal/provider/`，便于 mock 与切换
+10. **`SELECT *`** 禁止；显式列出字段
+
+## 前端铁律
+
+1. **禁止** 硬编码颜色 / 间距 / 圆角；必须走 token
+2. **禁止** `any` / `@ts-ignore`
+3. 数据请求统一经 `packages/api-client` + TanStack Query
+4. 错误码 → 文案映射统一在 `packages/utils/src/errCodeMap.ts`
+5. 路由必须 `lazy()` 懒加载
+6. 图片必须 `<picture>` AVIF/WebP/JPG 三档 + `aspect-ratio` 占位 + `loading="lazy"`
+7. 视频必须 `playsInline muted preload="metadata"`，移动端不自动播放
+
+## 安全铁律
+
+1. JWT 双 Token：Access 2h / Refresh 14d
+2. 密码 `bcrypt cost=12`；用户 API Key 仅创建时返回明文，DB 存 `SHA256+salt`
+3. 第三方账号池凭证用 **AES-256-GCM** 加密落库
+4. 限流三道：IP / UID / API Key
+5. 越权：所有用户端 SQL 必须显式 `user_id`
+6. 仓库**绝不**提交 `.env*`、密钥、token
+
+## 进度同步
+
+- 每完成一个 Sprint 任务，必须更新 `PROGRESS.md`
+- 遇到偏离规范的设计决策，必须在 `docs/` 内补充说明并在 PR 描述中标注
+
+## 引用规范的方式
+
+涉及具体细节时引用对应文档：
+- 端口 / Git / 命名 → `docs/01-开发规范-总览.md`
+- 后端架构 / 错误码 / 限流 → `docs/02-后端规范.md`
+- 表 / 索引 → `docs/03-数据库设计.md`
+- 接口路径 / 入参出参 → `docs/04-API规范.md`
+- token / 组件 / 响应式 → `docs/05-前端规范.md`
+- 部署 / 监控 → `docs/06-部署与运维规范.md`

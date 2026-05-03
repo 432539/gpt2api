@@ -1,0 +1,20 @@
+{
+  "name": "kleinai-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@9.7.0",
+  "scripts": {
+    "dev:user": "pnpm --filter @kleinai/user dev",
+    "dev:admin": "pnpm --filter @kleinai/admin dev",
+    "build": "pnpm -r --filter ./apps/* build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "format": "prettier --write \"**/*.{ts,tsx,css,md,json}\""
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "eslint": "^9.10.0",
+    "prettier": "^3.3.3",
+    "typescript": "^5.5.3"
+  }
+}

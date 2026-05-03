@@ -1,0 +1,89 @@
+---
+description: KleinAI 前端 React 代码规范，仅针对 frontend/ 目录生效。
+globs:
+  - frontend/**/*.ts
+  - frontend/**/*.tsx
+  - frontend/**/*.css
+  - frontend/**/*.scss
+  - frontend/**/package.json
+  - frontend/**/tailwind.config.*
+  - frontend/**/vite.config.*
+---
+
+# KleinAI · 前端代码规则
+
+> 详见 `docs/05-前端规范.md`
+
+## Monorepo 结构
+
+```
+frontend/
+├── apps/user        端口 5173 → 生产 17080
+├── apps/admin       端口 5174 → 生产 17088
+└── packages/
+    ├── theme        克莱因蓝 token + tailwind preset
+    ├── ui           共享业务组件
+    ├── api-client   基于 OpenAPI 自动生成
+    ├── hooks
+    ├── utils
+    └── icons
+```
+
+## 克莱因蓝（**铁律**）
+
+- 主色 `#002FA7`（`--klein-600`），高光 `#1E3DFF`（`--klein-500`）
+- **禁止**硬编码颜色，必须用 `bg-klein-600 / text-ink-900 / shadow-glow` 等 token
+- token 唯一来源：`packages/theme/src/tokens.css` 与 `tailwind.preset.ts`
+- 深色优先：创作页面 `data-theme="dark"`
+
+## 多端响应式（**铁律**）
+
+- 字号必须用 `text-h1 / text-h2 / text-body`（已 `clamp()` 内置）
+- 网格用 `grid-template-columns: repeat(auto-fill, minmax(...))` 或容器查询
+- 安全区：`pb-[max(16px,env(safe-area-inset-bottom))]`
+- 触控热区 ≥ 44×44（`min-h-11 min-w-11`）
+
+## 状态与数据
+
+- 全局状态：**Zustand**（用户偏好、UI）
+- 异步数据：**TanStack Query v5**；**禁止**业务代码直接 `fetch`，必须用 `packages/api-client`
+- 表单：**react-hook-form + zod**
+
+## 路由
+
+- React Router v6
+- 全部 `lazy()` 懒加载
+- 守卫：`<AuthGuard>` 用户端 / `<PermissionGuard permission="...">` 后台
+
+## TypeScript
+
+- `strict: true`
+- **禁止** `any`、`@ts-ignore`、`@ts-expect-error`
+- 业务枚举用 `as const` 对象，不用原生 `enum`
+- 跨包公共类型放 `packages/utils/src/types`
+
+## 组件
+
+- 函数组件 + hooks-only；`React.memo` 仅在性能验证后使用
+- 命名：`PascalCase.tsx`；hook：`useXxx.ts`
+- 错误边界：每条路由必带
+- Empty / Loading / Error 三态必须实现
+
+## 图片 / 视频
+
+- 图片：`<picture>` AVIF/WebP/JPG 三档 + `aspectRatio` 占位 + `loading="lazy"`
+- 图标：全部 SVG，`currentColor` 染色
+- 视频：`playsInline muted preload="metadata"`，移动端不自动播放
+- 长视频用 HLS（hls.js）
+
+## 国际化
+
+- 所有文案 `t('xxx.yyy')`，**禁止**硬编码中文（界面文案、错误提示等）
+- 命名空间：`common / auth / create / billing / admin / errors`
+
+## 质量
+
+- ESLint + Prettier + Stylelint pre-commit
+- `tsc --noEmit` 必过
+- 单测：vitest，业务 hooks 与 store ≥ 60%
+- E2E：Playwright（关键链路）

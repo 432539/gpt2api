@@ -1,0 +1,17 @@
+# 默认按 git 自动识别二进制
+* text=auto
+
+# Linux 容器内执行的脚本必须是 LF
+*.sh text eol=lf
+deploy/mysql-init/** text eol=lf
+
+# Go / SQL / yaml 默认 LF（跨平台一致）
+*.go    text eol=lf
+*.sql   text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+
+# Windows 端工具脚本保持 CRLF
+*.ps1   text eol=crlf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf

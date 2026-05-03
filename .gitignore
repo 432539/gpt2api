@@ -1,0 +1,34 @@
+# Secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# Node
+node_modules/
+**/node_modules/
+.pnpm-store/
+dist/
+.next/
+.turbo/
+
+# Build
+**/bin/
+**/coverage/
+*.log
+*.out
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Cursor 私有规则不入仓（项目规则保留）
+# .cursor/rules/ 已纳入版本控制（项目级）
+
+# 大图素材原档（按需）
+/assets/raw/

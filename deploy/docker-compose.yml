@@ -1,0 +1,190 @@
+# =====================================================
+# KleinAI · 单机生产 docker-compose
+# 启动：docker compose --env-file ./env/.env.local up -d
+# 端口策略见 docs/01-开发规范-总览.md §端口规范
+# =====================================================
+
+x-common-env: &common-env
+  KLEIN_ENV: ${KLEIN_ENV:-prod}
+  KLEIN_DB_DSN: ${KLEIN_DB_DSN}
+  KLEIN_REDIS_ADDR: ${KLEIN_REDIS_ADDR:-redis:6379}
+  KLEIN_REDIS_PASSWORD: ${KLEIN_REDIS_PASSWORD:-}
+  KLEIN_JWT_SECRET: ${KLEIN_JWT_SECRET}
+  KLEIN_JWT_REFRESH_SECRET: ${KLEIN_JWT_REFRESH_SECRET}
+  KLEIN_AES_KEY: ${KLEIN_AES_KEY}
+  KLEIN_OPENAI_BASE: ${KLEIN_OPENAI_BASE:-https://api.openai.com}
+  KLEIN_GROK_BASE: ${KLEIN_GROK_BASE:-https://api.x.ai}
+  KLEIN_CORS_ORIGINS: ${KLEIN_CORS_ORIGINS}
+  KLEIN_LOG_DIR: /app/logs
+  TZ: Asia/Shanghai
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: klein-mysql
+    restart: always
+    command:
+      - --default-authentication-plugin=caching_sha2_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --innodb-buffer-pool-size=2G
+      - --max_connections=300
+      - --sql-mode=STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION
+    environment:
+      MYSQL_ROOT_PASSWORD: ${KLEIN_MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${KLEIN_MYSQL_DB:-klein_ai}
+      MYSQL_USER: ${KLEIN_MYSQL_USER:-klein}
+      MYSQL_PASSWORD: ${KLEIN_MYSQL_PASSWORD}
+    ports:
+      - "127.0.0.1:${KLEIN_MYSQL_PORT:-13306}:3306"
+    volumes:
+      - klein-mysql-data:/var/lib/mysql
+      # 首次初始化时执行 goose Up 段，避免 mysql 直接执行 Down 把表删空
+      - ./mysql-init/01-run-migrations.sh:/docker-entrypoint-initdb.d/01-run-migrations.sh:ro
+      - ../backend/migrations:/migrations:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p$$MYSQL_ROOT_PASSWORD"]
+      interval: 10s
+      retries: 6
+    networks: [klein]
+
+  redis:
+    image: redis:7-alpine
+    container_name: klein-redis
+    restart: always
+    command: redis-server --appendonly yes ${KLEIN_REDIS_PASSWORD:+--requirepass ${KLEIN_REDIS_PASSWORD}}
+    ports:
+      - "127.0.0.1:${KLEIN_REDIS_PORT:-16379}:6379"
+    volumes:
+      - klein-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      retries: 6
+    networks: [klein]
+
+  api:
+    image: kleinai/backend:latest
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: klein-api
+    restart: always
+    command: ["/app/api"]
+    environment:
+      <<: *common-env
+      KLEIN_NODE_ID: 1
+    expose: ["17180"]
+    volumes:
+      - klein-logs:/app/logs
+    depends_on:
+      mysql:  { condition: service_healthy }
+      redis:  { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:17180/healthz | grep -q ok || exit 1"]
+      interval: 15s
+      retries: 5
+    deploy:
+      resources:
+        limits: { cpus: '2', memory: 1G }
+    networks: [klein]
+
+  admin:
+    image: kleinai/backend:latest
+    container_name: klein-admin
+    restart: always
+    command: ["/app/admin"]
+    environment:
+      <<: *common-env
+      KLEIN_NODE_ID: 2
+    expose: ["17188"]
+    volumes:
+      - klein-logs:/app/logs
+    depends_on:
+      mysql:  { condition: service_healthy }
+      redis:  { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: '1', memory: 512M }
+    networks: [klein]
+
+  openai:
+    image: kleinai/backend:latest
+    container_name: klein-openai
+    restart: always
+    command: ["/app/openai"]
+    environment:
+      <<: *common-env
+      KLEIN_NODE_ID: 3
+    expose: ["17200"]
+    volumes:
+      - klein-logs:/app/logs
+    depends_on:
+      mysql:  { condition: service_healthy }
+      redis:  { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: '2', memory: 1G }
+    networks: [klein]
+
+  worker:
+    image: kleinai/backend:latest
+    container_name: klein-worker
+    restart: always
+    command: ["/app/worker"]
+    environment:
+      <<: *common-env
+      KLEIN_NODE_ID: 4
+    volumes:
+      - klein-logs:/app/logs
+    depends_on:
+      mysql:  { condition: service_healthy }
+      redis:  { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: '2', memory: 1G }
+    networks: [klein]
+
+  user-web:
+    image: kleinai/user-web:latest
+    build:
+      context: ../frontend
+      dockerfile: apps/user/Dockerfile
+    container_name: klein-user-web
+    restart: always
+    expose: ["80"]
+    networks: [klein]
+
+  admin-web:
+    image: kleinai/admin-web:latest
+    build:
+      context: ../frontend
+      dockerfile: apps/admin/Dockerfile
+    container_name: klein-admin-web
+    restart: always
+    expose: ["80"]
+    networks: [klein]
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: klein-nginx
+    restart: always
+    depends_on: [api, admin, openai, user-web, admin-web]
+    ports:
+      - "${KLEIN_USER_WEB_PORT:-17080}:17080"
+      - "${KLEIN_ADMIN_WEB_PORT:-17088}:17088"
+      - "${KLEIN_OPENAI_PORT:-17200}:17200"
+    volumes:
+      - ./nginx:/etc/nginx/conf.d:ro
+      - ./certs:/etc/nginx/certs:ro
+      - klein-logs:/var/log/nginx
+    networks: [klein]
+
+volumes:
+  klein-mysql-data:
+  klein-redis-data:
+  klein-logs:
+
+networks:
+  klein:
+    name: klein-net

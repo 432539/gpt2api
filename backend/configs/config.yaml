@@ -1,0 +1,72 @@
+# KleinAI 默认配置（不含敏感信息）
+# 优先级：环境变量 > config.${KLEIN_ENV}.yaml > 本文件
+
+app:
+  name: kleinai
+  env: dev
+
+server:
+  api_port: 17180
+  admin_port: 17188
+  openai_port: 17200
+  ws_port: 17280
+  pprof_port: 17590
+  read_timeout: 30s
+  write_timeout: 60s
+  shutdown_timeout: 15s
+
+mysql:
+  dsn: ""                    # 由环境变量 KLEIN_DB_DSN 注入
+  max_open_conns: 100
+  max_idle_conns: 20
+  conn_max_lifetime: 1h
+  slow_threshold: 200ms
+
+redis:
+  addr: ""                   # 由环境变量 KLEIN_REDIS_ADDR 注入
+  password: ""
+  db: 0
+  pool_size: 50
+
+jwt:
+  access_ttl: 2h
+  refresh_ttl: 336h          # 14d
+
+logger:
+  level: info
+  dir: ./logs
+  max_size_mb: 200
+  max_age_days: 30
+  compress: true
+  console: true              # dev 输出到控制台
+
+snowflake:
+  node_id: 1
+
+cors:
+  origins:
+    - http://localhost:5173
+    - http://localhost:5174
+
+ratelimit:
+  ip_per_minute: 1000
+  user_per_minute: 600
+  apikey_per_minute: 60
+
+pool:
+  strategy: round_robin      # round_robin | weighted | least_used | lowest_err_rate
+  cooldown_seconds: 600
+  fail_threshold: 5
+  health_check_seconds: 300
+
+provider:
+  openai_base: https://api.openai.com
+  grok_base: https://api.x.ai
+  request_timeout: 120s
+  retry: 1
+
+billing:
+  point_unit: 100            # 1 点 = 100（最小单位 0.01）
+
+cdn:
+  base: https://cdn.klein.example

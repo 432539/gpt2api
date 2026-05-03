@@ -1,0 +1,64 @@
+# =====================================================
+# KleinAI · 本地开发依赖（只起 MySQL + Redis）
+#
+# 使用：
+#   cd deploy
+#   docker compose -f docker-compose.dev.yml up -d
+#
+# 目的：本地依赖容器化，后端 4 个 cmd / 前端 2 个 app
+# 直接在主机 go run / pnpm dev，便于热重载和断点调试。
+#
+# 端口（host -> container）：
+#   MySQL  : 13306 -> 3306
+#   Redis  : 16379 -> 6379
+# =====================================================
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: klein-mysql-dev
+    restart: unless-stopped
+    command:
+      - --default-authentication-plugin=caching_sha2_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --innodb-buffer-pool-size=512M
+      - --max_connections=200
+      - --sql-mode=STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION
+    environment:
+      MYSQL_ROOT_PASSWORD: klein-root-dev
+      MYSQL_DATABASE: klein_ai
+      MYSQL_USER: klein
+      MYSQL_PASSWORD: klein123
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:${KLEIN_DEV_MYSQL_PORT:-13306}:3306"
+    volumes:
+      - klein-mysql-dev-data:/var/lib/mysql
+      # 首次初始化时自动跑迁移：自定义脚本会剥掉 goose Down 段后再喂给 mysql
+      - ./mysql-init/01-run-migrations.sh:/docker-entrypoint-initdb.d/01-run-migrations.sh:ro
+      - ../backend/migrations:/migrations:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-pklein-root-dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: klein-redis-dev
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "127.0.0.1:${KLEIN_DEV_REDIS_PORT:-16379}:6379"
+    volumes:
+      - klein-redis-dev-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  klein-mysql-dev-data:
+  klein-redis-dev-data:

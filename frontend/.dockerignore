@@ -1,0 +1,35 @@
+**/node_modules
+**/dist
+**/.turbo
+**/.cache
+**/.vite
+**/.parcel-cache
+**/coverage
+**/.eslintcache
+**/.next
+**/.nuxt
+**/storybook-static
+
+# logs
+**/*.log
+**/npm-debug.log*
+**/yarn-debug.log*
+**/yarn-error.log*
+**/pnpm-debug.log*
+
+# editors
+.vscode
+.idea
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# misc
+.git
+.gitattributes
+.gitignore
+.env
+.env.local
+.env.*.local

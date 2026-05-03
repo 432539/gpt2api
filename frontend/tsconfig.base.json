@@ -1,0 +1,34 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
+    "useDefineForClassFields": true,
+    "baseUrl": ".",
+    "paths": {
+      "@kleinai/theme": ["packages/theme/src"],
+      "@kleinai/theme/*": ["packages/theme/src/*"],
+      "@kleinai/ui": ["packages/ui/src"],
+      "@kleinai/ui/*": ["packages/ui/src/*"],
+      "@kleinai/api-client": ["packages/api-client/src"],
+      "@kleinai/api-client/*": ["packages/api-client/src/*"],
+      "@kleinai/hooks": ["packages/hooks/src"],
+      "@kleinai/hooks/*": ["packages/hooks/src/*"],
+      "@kleinai/utils": ["packages/utils/src"],
+      "@kleinai/utils/*": ["packages/utils/src/*"]
+    }
+  }
+}

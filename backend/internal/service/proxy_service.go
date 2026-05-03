@@ -1,0 +1,263 @@
+package service
+
+import (
+	"context"
+	"fmt"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/kleinai/backend/internal/dto"
+	"github.com/kleinai/backend/internal/model"
+	"github.com/kleinai/backend/internal/repo"
+	"github.com/kleinai/backend/pkg/crypto"
+	"github.com/kleinai/backend/pkg/errcode"
+)
+
+// ProxyService 代理 CRUD 与运行时 URL 拼装。
+type ProxyService struct {
+	repo *repo.ProxyRepo
+	aes  *crypto.AESGCM
+
+	// 简易缓存：避免热路径每次都查 DB。
+	mu     sync.RWMutex
+	cached map[uint64]*model.Proxy
+	loaded time.Time
+}
+
+// NewProxyService 构造。
+func NewProxyService(r *repo.ProxyRepo, aes *crypto.AESGCM) *ProxyService {
+	return &ProxyService{repo: r, aes: aes, cached: map[uint64]*model.Proxy{}}
+}
+
+// Create 创建代理。
+func (s *ProxyService) Create(ctx context.Context, adminID uint64, req *dto.ProxyCreateReq) (*model.Proxy, error) {
+	if err := validateProtocol(req.Protocol); err != nil {
+		return nil, err
+	}
+	p := &model.Proxy{
+		Name:      strings.TrimSpace(req.Name),
+		Protocol:  strings.ToLower(strings.TrimSpace(req.Protocol)),
+		Host:      strings.TrimSpace(req.Host),
+		Port:      req.Port,
+		Status:    model.ProxyStatusEnabled,
+		CreatedBy: &adminID,
+	}
+	if u := strings.TrimSpace(req.Username); u != "" {
+		p.Username = &u
+	}
+	if pw := req.Password; pw != "" {
+		enc, err := s.aes.Encrypt([]byte(pw))
+		if err != nil {
+			return nil, errcode.Internal.Wrap(err)
+		}
+		p.PasswordEnc = enc
+	}
+	if r := strings.TrimSpace(req.Remark); r != "" {
+		p.Remark = &r
+	}
+	if err := s.repo.Create(ctx, p); err != nil {
+		return nil, errcode.DBError.Wrap(err)
+	}
+	s.invalidate()
+	return p, nil
+}
+
+// Update 更新代理（password 留空表示不变）。
+func (s *ProxyService) Update(ctx context.Context, id uint64, req *dto.ProxyUpdateReq) error {
+	if _, err := s.repo.GetByID(ctx, id); err != nil {
+		return errcode.ResourceMissing
+	}
+	fields := map[string]any{}
+	if req.Name != nil {
+		fields["name"] = strings.TrimSpace(*req.Name)
+	}
+	if req.Protocol != nil {
+		if err := validateProtocol(*req.Protocol); err != nil {
+			return err
+		}
+		fields["protocol"] = strings.ToLower(*req.Protocol)
+	}
+	if req.Host != nil {
+		fields["host"] = strings.TrimSpace(*req.Host)
+	}
+	if req.Port != nil {
+		fields["port"] = *req.Port
+	}
+	if req.Username != nil {
+		if u := strings.TrimSpace(*req.Username); u == "" {
+			fields["username"] = nil
+		} else {
+			fields["username"] = u
+		}
+	}
+	if req.Password != nil {
+		if pw := *req.Password; pw == "" {
+			fields["password_enc"] = nil
+		} else {
+			enc, err := s.aes.Encrypt([]byte(pw))
+			if err != nil {
+				return errcode.Internal.Wrap(err)
+			}
+			fields["password_enc"] = enc
+		}
+	}
+	if req.Status != nil {
+		fields["status"] = *req.Status
+	}
+	if req.Remark != nil {
+		fields["remark"] = strings.TrimSpace(*req.Remark)
+	}
+	if err := s.repo.Update(ctx, id, fields); err != nil {
+		return errcode.DBError.Wrap(err)
+	}
+	s.invalidate()
+	return nil
+}
+
+// Delete 软删除。
+func (s *ProxyService) Delete(ctx context.Context, id uint64) error {
+	if _, err := s.repo.GetByID(ctx, id); err != nil {
+		return errcode.ResourceMissing
+	}
+	if err := s.repo.SoftDelete(ctx, id); err != nil {
+		return errcode.DBError.Wrap(err)
+	}
+	s.invalidate()
+	return nil
+}
+
+// List 列表（出参脱敏）。
+func (s *ProxyService) List(ctx context.Context, req *dto.ProxyListReq) ([]*dto.ProxyResp, int64, error) {
+	items, total, err := s.repo.List(ctx, repo.ProxyListFilter{
+		Status:   req.Status,
+		Keyword:  req.Keyword,
+		Page:     req.Page,
+		PageSize: req.PageSize,
+	})
+	if err != nil {
+		return nil, 0, errcode.DBError.Wrap(err)
+	}
+	resp := make([]*dto.ProxyResp, 0, len(items))
+	for _, it := range items {
+		resp = append(resp, proxyToResp(it))
+	}
+	return resp, total, nil
+}
+
+// GetByID 获取（用于其它服务）。
+func (s *ProxyService) GetByID(ctx context.Context, id uint64) (*model.Proxy, error) {
+	if id == 0 {
+		return nil, nil
+	}
+	s.mu.RLock()
+	if p, ok := s.cached[id]; ok && time.Since(s.loaded) < 30*time.Second {
+		s.mu.RUnlock()
+		return p, nil
+	}
+	s.mu.RUnlock()
+	p, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	s.cached[id] = p
+	s.loaded = time.Now()
+	s.mu.Unlock()
+	return p, nil
+}
+
+// ResolvePassword 把 PasswordEnc 解密成明文（仅在内部需要时用）。
+func (s *ProxyService) ResolvePassword(p *model.Proxy) (string, error) {
+	if len(p.PasswordEnc) == 0 {
+		return "", nil
+	}
+	plain, err := s.aes.Decrypt(p.PasswordEnc)
+	if err != nil {
+		return "", err
+	}
+	return string(plain), nil
+}
+
+// BuildURL 把代理拼成 url.URL（含密码）。
+func (s *ProxyService) BuildURL(p *model.Proxy) (*url.URL, error) {
+	if p == nil {
+		return nil, nil
+	}
+	u := &url.URL{
+		Scheme: p.Protocol,
+		Host:   p.Host + ":" + strconv.Itoa(int(p.Port)),
+	}
+	if p.Username != nil && *p.Username != "" {
+		pw, err := s.ResolvePassword(p)
+		if err != nil {
+			return nil, err
+		}
+		u.User = url.UserPassword(*p.Username, pw)
+	}
+	return u, nil
+}
+
+// MarkCheck 记录代理探测结果。
+func (s *ProxyService) MarkCheck(ctx context.Context, id uint64, ok bool, latencyMs int, errMsg string) error {
+	if errMsg != "" && len(errMsg) > 250 {
+		errMsg = errMsg[:250]
+	}
+	if err := s.repo.MarkCheck(ctx, id, ok, latencyMs, errMsg); err != nil {
+		return errcode.DBError.Wrap(err)
+	}
+	s.invalidate()
+	return nil
+}
+
+// invalidate 简易缓存失效。
+func (s *ProxyService) invalidate() {
+	s.mu.Lock()
+	s.cached = map[uint64]*model.Proxy{}
+	s.mu.Unlock()
+}
+
+// === helpers ===
+
+func validateProtocol(proto string) error {
+	switch strings.ToLower(strings.TrimSpace(proto)) {
+	case model.ProxyProtoHTTP,
+		model.ProxyProtoHTTPS,
+		model.ProxyProtoSOCKS5,
+		model.ProxyProtoSOCKS5H:
+		return nil
+	default:
+		return errcode.InvalidParam.WithMsg(fmt.Sprintf("不支持的协议: %s", proto))
+	}
+}
+
+func proxyToResp(p *model.Proxy) *dto.ProxyResp {
+	r := &dto.ProxyResp{
+		ID:           p.ID,
+		Name:         p.Name,
+		Protocol:     p.Protocol,
+		Host:         p.Host,
+		Port:         p.Port,
+		Status:       p.Status,
+		HasPassword:  len(p.PasswordEnc) > 0,
+		LastCheckOK:  p.LastCheckOK,
+		LastCheckMs:  p.LastCheckMs,
+		CreatedAt:    p.CreatedAt.Unix(),
+		UpdatedAt:    p.UpdatedAt.Unix(),
+	}
+	if p.Username != nil {
+		r.Username = *p.Username
+	}
+	if p.LastCheckAt != nil {
+		r.LastCheckAt = p.LastCheckAt.Unix()
+	}
+	if p.LastError != nil {
+		r.LastError = *p.LastError
+	}
+	if p.Remark != nil {
+		r.Remark = *p.Remark
+	}
+	return r
+}

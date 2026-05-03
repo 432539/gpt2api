@@ -1,0 +1,9 @@
+app:
+  env: prod
+
+logger:
+  level: info
+  console: false
+
+ratelimit:
+  ip_per_minute: 1200

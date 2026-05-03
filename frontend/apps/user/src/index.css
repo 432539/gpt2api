@@ -1,0 +1,24 @@
+@import '@kleinai/theme/components.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===========================================================
+   user app · 仅保留站点级覆盖；
+   按钮 / 表单 / 卡片 / 文字 等统一在 @kleinai/theme/components.css
+   =========================================================== */
+
+@layer base {
+  /* 用户端创作页默认深色，文本使用稍紧的 line-height 提升信息密度 */
+  body {
+    line-height: 1.5;
+  }
+}
+
+@layer components {
+  /* 创作区可滚动主体的统一阴影遮罩 */
+  .creative-pane {
+    @apply rounded-lg border border-border bg-surface-1 shadow-2;
+  }
+}

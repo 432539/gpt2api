@@ -1,0 +1,245 @@
+/* ===========================================================
+   gpt2api Design Tokens · 默认皮肤：Klein Blue (IKB)
+   规则：禁止硬编码颜色 / 间距 / 圆角，必须走 CSS 变量。
+   组件层在 components.css 实现；preset 把以下变量暴露给 Tailwind。
+   =========================================================== */
+
+:root {
+  /* ====== 主色：克莱因蓝（IKB） ====== */
+  --klein-50:  #E5ECFF;
+  --klein-100: #C6D2FF;
+  --klein-200: #93A6FF;
+  --klein-300: #607AFF;
+  --klein-400: #3D5BFF;
+  --klein-500: #1E3DFF;       /* 高光 */
+  --klein-600: #002FA7;       /* IKB 主色 */
+  --klein-700: #002388;
+  --klein-800: #001A66;
+  --klein-900: #000F40;
+
+  --klein-glow:      0 0 24px rgba(30, 61, 255, .55), 0 0 60px rgba(0, 47, 167, .35);
+  --klein-glow-soft: 0 8px 24px rgba(0, 47, 167, .18);
+  --klein-gradient:      linear-gradient(135deg, #002FA7 0%, #1E3DFF 100%);
+  --klein-gradient-soft: linear-gradient(135deg, rgba(0,47,167,.12) 0%, rgba(30,61,255,.10) 100%);
+
+  /* ====== 中性 ink ====== */
+  --ink-50:  #F7F8FB;
+  --ink-100: #EEF1F6;
+  --ink-200: #DDE2EC;
+  --ink-300: #BBC2D0;
+  --ink-400: #8A93A6;
+  --ink-500: #5D667B;
+  --ink-600: #404A60;
+  --ink-700: #2A3346;
+  --ink-800: #1A2236;
+  --ink-900: #0B1226;
+
+  /* ====== 状态色（含 soft 背景） ====== */
+  --success-500: #16A34A;
+  --success-600: #15803D;
+  --success-soft: rgba(22, 163, 74, .12);
+  --warning-500: #D97706;
+  --warning-600: #B45309;
+  --warning-soft: rgba(217, 119, 6, .12);
+  --danger-500:  #DC2626;
+  --danger-600:  #B91C1C;
+  --danger-soft: rgba(220, 38, 38, .12);
+  --info-500:    var(--klein-500);
+  --info-soft:   rgba(30, 61, 255, .10);
+
+  /* ====== 圆角 ====== */
+  --radius-xs:   4px;
+  --radius-sm:   8px;
+  --radius-md:  12px;
+  --radius-lg:  16px;
+  --radius-xl:  24px;
+  --radius-2xl: 32px;
+  --radius-pill: 999px;
+
+  /* ====== 阴影（5 段） ====== */
+  --shadow-1: 0 1px 2px rgba(11, 18, 38, .05), 0 1px 1px rgba(11, 18, 38, .04);
+  --shadow-2: 0 4px 12px rgba(11, 18, 38, .08), 0 1px 2px rgba(11, 18, 38, .04);
+  --shadow-3: 0 12px 32px rgba(11, 18, 38, .12), 0 2px 6px rgba(11, 18, 38, .06);
+  --shadow-4: 0 24px 64px rgba(11, 18, 38, .18), 0 4px 12px rgba(11, 18, 38, .08);
+  --shadow-inset: inset 0 1px 2px rgba(11, 18, 38, .06);
+
+  /* ====== 间距（4pt 基线） ====== */
+  --space-0_5:  2px;
+  --space-1:    4px;
+  --space-1_5:  6px;
+  --space-2:    8px;
+  --space-2_5: 10px;
+  --space-3:   12px;
+  --space-3_5: 14px;
+  --space-4:   16px;
+  --space-5:   20px;
+  --space-6:   24px;
+  --space-7:   28px;
+  --space-8:   32px;
+  --space-10:  40px;
+  --space-12:  48px;
+  --space-16:  64px;
+  --space-20:  80px;
+
+  /* ====== 字号（fluid clamp，多端自适应） ======
+     落地原则：
+       - display 仅用于落地页 / 状态页大字
+       - h1..h4 用于页头 / section 标题 / 卡片标题
+       - body 默认正文；small 二级文本；tiny 12px 标签
+   */
+  --fs-display: clamp(1.875rem, 1.3rem + 2.0vw, 2.75rem); /* 30–44 */
+  --fs-h1:      clamp(1.375rem, 1.15rem + 0.9vw, 1.625rem);/* 22–26 */
+  --fs-h2:      clamp(1.1875rem, 1.05rem + 0.6vw, 1.375rem);/* 19–22 */
+  --fs-h3:      clamp(1.0625rem, 1rem + 0.3vw, 1.1875rem);/* 17–19 */
+  --fs-h4:      0.9375rem;                                /* 15 */
+  --fs-body:    0.9375rem;                                /* 15 */
+  --fs-small:   0.8125rem;                                /* 13 */
+  --fs-tiny:    0.6875rem;                                /* 11 */
+
+  --lh-tight:  1.15;
+  --lh-snug:   1.3;
+  --lh-normal: 1.55;
+  --lh-loose:  1.75;
+
+  --tracking-tight:   -0.02em;
+  --tracking-normal:  0;
+  --tracking-wide:    0.02em;
+  --tracking-wider:   0.06em;
+
+  --weight-regular: 400;
+  --weight-medium:  500;
+  --weight-semibold:600;
+  --weight-bold:    700;
+  --weight-extra:   800;
+
+  /* ====== 字体族 ====== */
+  --font-sans:
+    'Inter', 'PingFang SC', 'Microsoft YaHei', 'Helvetica Neue',
+    Arial, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono:
+    'JetBrains Mono', 'SFMono-Regular', Menlo, Consolas, monospace;
+
+  /* ====== 控件尺寸（统一节奏） ====== */
+  --ctl-h-xs: 24px;
+  --ctl-h-sm: 32px;
+  --ctl-h-md: 36px;
+  --ctl-h-lg: 40px;
+  --ctl-h-xl: 44px;            /* 移动端最小可点区 */
+  --ctl-px-sm: 10px;
+  --ctl-px-md: 14px;
+  --ctl-px-lg: 18px;
+  --ctl-px-xl: 22px;
+  --ctl-gap:    8px;
+  --ctl-radius: var(--radius-sm);
+
+  /* ====== 表面 / 文字（浅色默认） ====== */
+  --surface-bg: #F4F6FB;
+  --surface-1:  #FFFFFF;
+  --surface-2:  #EEF1F8;
+  --surface-3:  #E1E6F1;
+  --surface-overlay: rgba(11, 18, 38, .55);
+  --surface-glass:   rgba(255, 255, 255, .72);
+
+  --text-primary:   var(--ink-900);
+  --text-secondary: var(--ink-600);
+  --text-tertiary:  var(--ink-400);
+  --text-on-klein:  #FFFFFF;
+  --text-disabled:  var(--ink-300);
+
+  --border-default: var(--ink-200);
+  --border-strong:  var(--ink-300);
+  --border-subtle:  var(--ink-100);
+
+  --link:       var(--klein-600);
+  --link-hover: var(--klein-500);
+
+  --focus-ring:        0 0 0 3px rgba(30, 61, 255, .35);
+  --focus-ring-danger: 0 0 0 3px rgba(220, 38, 38, .30);
+
+  /* ====== 动效曲线 / 时长 ====== */
+  --ease-out:       cubic-bezier(.22, 1, .36, 1);
+  --ease-in-out:    cubic-bezier(.4, 0, .2, 1);
+  --ease-spring:    cubic-bezier(.34, 1.56, .64, 1);
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --duration-slow: 320ms;
+}
+
+/* ====== 深色（创作页默认走暗模式） ====== */
+[data-theme='dark'] {
+  --surface-bg: #060A1A;
+  --surface-1:  #0C1428;
+  --surface-2:  #131D38;
+  --surface-3:  #1B2647;
+  --surface-glass:   rgba(11, 18, 38, .60);
+  --surface-overlay: rgba(0, 0, 0, .60);
+
+  --text-primary:   #F4F6FB;
+  --text-secondary: #B8C0D6;
+  --text-tertiary:  #6B7591;
+  --text-on-klein:  #FFFFFF;
+  --text-disabled:  rgba(184, 192, 214, .35);
+
+  --border-default: rgba(255, 255, 255, .08);
+  --border-strong:  rgba(255, 255, 255, .18);
+  --border-subtle:  rgba(255, 255, 255, .04);
+
+  --link:       var(--klein-300);
+  --link-hover: var(--klein-200);
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .35);
+  --shadow-2: 0 4px 16px rgba(0, 0, 0, .45);
+  --shadow-3: 0 18px 48px rgba(0, 0, 0, .55);
+  --shadow-4: 0 32px 80px rgba(0, 0, 0, .65);
+  --shadow-inset: inset 0 1px 2px rgba(0, 0, 0, .35);
+
+  --success-soft: rgba(22, 163, 74, .18);
+  --warning-soft: rgba(217, 119, 6, .18);
+  --danger-soft:  rgba(220, 38, 38, .22);
+  --info-soft:    rgba(30, 61, 255, .18);
+}
+
+/* ====== 全局基础 ====== */
+html, body, #root { height: 100%; }
+
+html {
+  font-family: var(--font-sans);
+  font-size: 16px;
+  color-scheme: light dark;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  margin: 0;
+  background: var(--surface-bg);
+  color: var(--text-primary);
+  font-size: var(--fs-body);
+  line-height: var(--lh-normal);
+  letter-spacing: var(--tracking-normal);
+}
+
+* { box-sizing: border-box; }
+
+/* 安全区适配 */
+.safe-bottom { padding-bottom: max(var(--space-4), env(safe-area-inset-bottom)); }
+.safe-top    { padding-top:    max(var(--space-4), env(safe-area-inset-top)); }
+
+/* 滚动条 */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: rgba(0, 47, 167, .25); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(0, 47, 167, .45); }
+::-webkit-scrollbar-track { background: transparent; }
+
+::selection { background: var(--klein-500); color: #fff; }
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* 响应式正文：在大屏适度放大 */
+@media (min-width: 1280px) {
+  :root { --fs-body: 1rem; }
+}

@@ -1,0 +1,726 @@
+/* ===========================================================
+   gpt2api · UI Pro 组件层
+   仅依赖 tokens.css 与 Tailwind 工具类。命名以 BEM-lite 为基础。
+   入口在每个 app 的 main.tsx 中显式引用 @kleinai/theme/components.css
+   =========================================================== */
+
+/* -------------------------------------------------------------
+   1. Typography helpers
+   ----------------------------------------------------------- */
+@layer components {
+  .text-display     { font-size: var(--fs-display); line-height: var(--lh-tight); letter-spacing: var(--tracking-tight); font-weight: var(--weight-bold); }
+  .text-h1          { font-size: var(--fs-h1);      line-height: var(--lh-tight); letter-spacing: var(--tracking-tight); font-weight: var(--weight-bold); }
+  .text-h2          { font-size: var(--fs-h2);      line-height: var(--lh-snug);  letter-spacing: var(--tracking-tight); font-weight: var(--weight-semibold); }
+  .text-h3          { font-size: var(--fs-h3);      line-height: var(--lh-snug);  font-weight: var(--weight-semibold); }
+  .text-h4          { font-size: var(--fs-h4);      line-height: var(--lh-snug);  font-weight: var(--weight-semibold); }
+  .text-body        { font-size: var(--fs-body);    line-height: var(--lh-normal); }
+  .text-small       { font-size: var(--fs-small);   line-height: var(--lh-normal); }
+  .text-tiny        { font-size: var(--fs-tiny);    line-height: var(--lh-snug);  letter-spacing: var(--tracking-wide); }
+  .text-overline    { font-size: var(--fs-tiny);    line-height: var(--lh-snug);  letter-spacing: var(--tracking-wider); text-transform: uppercase; font-weight: var(--weight-semibold); color: var(--text-tertiary); }
+
+  .text-mono        { font-family: var(--font-mono); font-feature-settings: 'tnum' 1, 'liga' 0; }
+
+  .gradient-text {
+    background: var(--klein-gradient);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    font-weight: var(--weight-bold);
+  }
+}
+
+/* -------------------------------------------------------------
+   2. Buttons · 五个语义 + 五个尺寸
+   语义：primary / secondary / ghost / outline / danger / link
+   尺寸：xs / sm / md(默认) / lg / xl
+   修饰：btn-icon (方形仅图标) / btn-block (整宽)
+   ----------------------------------------------------------- */
+@layer components {
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--ctl-gap);
+    height: var(--ctl-h-lg);
+    padding-inline: var(--ctl-px-lg);
+    border-radius: var(--ctl-radius);
+    font-size: var(--fs-body);
+    font-weight: var(--weight-semibold);
+    line-height: 1;
+    white-space: nowrap;
+    user-select: none;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: background var(--duration-base) var(--ease-out),
+                color var(--duration-base) var(--ease-out),
+                border-color var(--duration-base) var(--ease-out),
+                box-shadow var(--duration-base) var(--ease-out),
+                transform var(--duration-fast) var(--ease-out);
+  }
+  .btn:disabled,
+  .btn[aria-disabled='true'] {
+    opacity: .55;
+    cursor: not-allowed;
+  }
+  .btn:active:not(:disabled):not([aria-disabled='true']) {
+    transform: translateY(1px);
+  }
+
+  /* 尺寸 */
+  .btn-xs { height: var(--ctl-h-xs); padding-inline: var(--ctl-px-sm); font-size: var(--fs-tiny); border-radius: var(--radius-xs); gap: 4px; }
+  .btn-sm { height: var(--ctl-h-sm); padding-inline: var(--ctl-px-md); font-size: var(--fs-small); }
+  .btn-md { height: var(--ctl-h-md); padding-inline: var(--ctl-px-md); font-size: var(--fs-small); }
+  .btn-lg { height: var(--ctl-h-lg); padding-inline: var(--ctl-px-lg); font-size: var(--fs-body); }
+  .btn-xl { height: var(--ctl-h-xl); padding-inline: var(--ctl-px-xl); font-size: var(--fs-body); }
+  .btn-block { display: flex; width: 100%; }
+
+  .btn-icon { padding-inline: 0; aspect-ratio: 1 / 1; gap: 0; }
+  .btn-icon.btn-xs { width: var(--ctl-h-xs); }
+  .btn-icon.btn-sm { width: var(--ctl-h-sm); }
+  .btn-icon.btn-md { width: var(--ctl-h-md); }
+  .btn-icon.btn-lg { width: var(--ctl-h-lg); }
+  .btn-icon.btn-xl { width: var(--ctl-h-xl); }
+
+  /* 语义 · primary（克莱因蓝渐变） */
+  .btn-primary {
+    background-image: var(--klein-gradient);
+    color: var(--text-on-klein);
+    box-shadow: var(--klein-glow-soft);
+    border-color: transparent;
+  }
+  .btn-primary:hover:not(:disabled):not([aria-disabled='true']) {
+    box-shadow: var(--klein-glow);
+    filter: brightness(1.05);
+  }
+
+  /* 语义 · secondary（克莱因蓝弱底，常用于次级 CTA） */
+  .btn-secondary {
+    background: var(--info-soft);
+    color: var(--klein-500);
+    border-color: rgba(30, 61, 255, .25);
+  }
+  .btn-secondary:hover:not(:disabled):not([aria-disabled='true']) {
+    background: rgba(30, 61, 255, .18);
+    border-color: var(--klein-500);
+  }
+
+  /* 语义 · outline（中性边框） */
+  .btn-outline {
+    background: var(--surface-1);
+    color: var(--text-primary);
+    border-color: var(--border-strong);
+  }
+  .btn-outline:hover:not(:disabled):not([aria-disabled='true']) {
+    border-color: var(--klein-500);
+    color: var(--klein-500);
+  }
+
+  /* 语义 · ghost（无背景） */
+  .btn-ghost {
+    background: transparent;
+    color: var(--text-secondary);
+  }
+  .btn-ghost:hover:not(:disabled):not([aria-disabled='true']) {
+    background: var(--surface-2);
+    color: var(--text-primary);
+  }
+
+  /* 语义 · danger */
+  .btn-danger {
+    background: var(--danger-500);
+    color: #fff;
+    box-shadow: 0 4px 14px rgba(220, 38, 38, .25);
+  }
+  .btn-danger:hover:not(:disabled):not([aria-disabled='true']) {
+    background: var(--danger-600);
+    box-shadow: 0 6px 18px rgba(220, 38, 38, .35);
+  }
+  .btn-danger-ghost {
+    background: transparent;
+    color: var(--danger-500);
+  }
+  .btn-danger-ghost:hover:not(:disabled):not([aria-disabled='true']) {
+    background: var(--danger-soft);
+  }
+
+  /* 语义 · link（行内文字按钮） */
+  .btn-link {
+    background: transparent;
+    color: var(--link);
+    padding-inline: 0;
+    height: auto;
+    text-decoration: none;
+  }
+  .btn-link:hover:not(:disabled):not([aria-disabled='true']) {
+    color: var(--link-hover);
+    text-decoration: underline;
+  }
+
+  /* 旧 alias，确保渐进迁移不破坏现有页面 */
+  .btn-klein { @apply btn btn-primary btn-md; }
+}
+
+/* -------------------------------------------------------------
+   3. Form controls
+   ----------------------------------------------------------- */
+@layer components {
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+  }
+  .field-label {
+    font-size: var(--fs-small);
+    font-weight: var(--weight-medium);
+    color: var(--text-secondary);
+  }
+  .field-hint {
+    font-size: var(--fs-small);
+    color: var(--text-tertiary);
+    line-height: var(--lh-normal);
+  }
+  .field-error {
+    font-size: var(--fs-small);
+    color: var(--danger-500);
+    line-height: var(--lh-snug);
+  }
+
+  .input,
+  .select,
+  .textarea {
+    width: 100%;
+    min-width: 0;
+    height: var(--ctl-h-lg);
+    padding: 0 var(--ctl-px-md);
+    font-size: var(--fs-body);
+    font-family: inherit;
+    color: var(--text-primary);
+    background: var(--surface-1);
+    border: 1px solid var(--border-default);
+    border-radius: var(--ctl-radius);
+    transition: border-color var(--duration-base) var(--ease-out),
+                box-shadow var(--duration-base) var(--ease-out),
+                background var(--duration-base) var(--ease-out);
+  }
+  .input::placeholder,
+  .textarea::placeholder { color: var(--text-tertiary); }
+
+  .input:hover:not(:disabled):not(:focus),
+  .select:hover:not(:disabled):not(:focus),
+  .textarea:hover:not(:disabled):not(:focus) {
+    border-color: var(--border-strong);
+  }
+  .input:focus,
+  .select:focus,
+  .textarea:focus {
+    outline: none;
+    border-color: var(--klein-500);
+    box-shadow: var(--focus-ring);
+  }
+  .input:disabled,
+  .select:disabled,
+  .textarea:disabled {
+    background: var(--surface-2);
+    color: var(--text-disabled);
+    cursor: not-allowed;
+  }
+
+  .textarea {
+    height: auto;
+    min-height: 96px;
+    padding: 10px var(--ctl-px-md);
+    line-height: var(--lh-normal);
+    resize: vertical;
+  }
+
+  .input-sm, .select-sm, .textarea-sm {
+    height: var(--ctl-h-md);
+    padding-inline: var(--ctl-px-sm);
+    font-size: var(--fs-small);
+  }
+  .input-lg, .select-lg, .textarea-lg {
+    height: var(--ctl-h-xl);
+    padding-inline: var(--ctl-px-lg);
+  }
+
+  .input-error,
+  .select-error,
+  .textarea-error {
+    border-color: var(--danger-500);
+  }
+  .input-error:focus,
+  .select-error:focus,
+  .textarea-error:focus {
+    box-shadow: var(--focus-ring-danger);
+  }
+
+  /* 输入框 + 前后图标 */
+  .input-group {
+    display: flex;
+    align-items: stretch;
+    gap: 6px;
+  }
+  .input-affix {
+    position: relative;
+    display: flex;
+    align-items: center;
+    width: 100%;
+    min-width: 0;
+  }
+  .input-affix > .input { padding-left: 38px; }
+  .input-affix > .input.input-affix-end { padding-left: var(--ctl-px-md); padding-right: 38px; }
+  .input-affix > .input-affix-icon {
+    position: absolute;
+    left: 12px;
+    color: var(--text-tertiary);
+    pointer-events: none;
+    display: inline-flex;
+  }
+  .input-affix > .input-affix-icon-end {
+    left: auto;
+    right: 12px;
+  }
+
+  /* 旧 alias */
+  .input-klein { @apply input; }
+
+  /* Checkbox / Radio（极简方案） */
+  .checkbox,
+  .radio {
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    border: 1.5px solid var(--border-strong);
+    background: var(--surface-1);
+    transition: background var(--duration-fast) var(--ease-out),
+                border-color var(--duration-fast) var(--ease-out);
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .checkbox { border-radius: 4px; }
+  .radio    { border-radius: 999px; }
+  .checkbox:checked,
+  .radio:checked {
+    background: var(--klein-500);
+    border-color: var(--klein-500);
+  }
+  .checkbox:checked::after {
+    content: '';
+    display: block;
+    width: 5px; height: 9px;
+    margin: 0 auto;
+    border: solid #fff;
+    border-width: 0 2px 2px 0;
+    transform: translateY(1px) rotate(45deg);
+  }
+  .radio:checked::after {
+    content: '';
+    display: block;
+    width: 6px; height: 6px;
+    margin: 4px auto;
+    border-radius: 999px;
+    background: #fff;
+  }
+}
+
+/* -------------------------------------------------------------
+   4. Cards / Panels / Surfaces
+   ----------------------------------------------------------- */
+@layer components {
+  .card {
+    background: var(--surface-1);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-1);
+  }
+  .card-flat {
+    background: var(--surface-1);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-lg);
+  }
+  .card-elevated {
+    background: var(--surface-1);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-3);
+  }
+  .card-glass {
+    background: var(--surface-glass);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-2);
+    backdrop-filter: blur(12px);
+  }
+  .card-gradient {
+    background: var(--klein-gradient);
+    color: var(--text-on-klein);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--klein-glow-soft);
+  }
+  .card-tinted {
+    background: var(--klein-gradient-soft);
+    border: 1px solid rgba(30, 61, 255, .25);
+    border-radius: var(--radius-lg);
+  }
+  .card-section {
+    padding: var(--space-5);
+  }
+  @media (min-width: 1024px) {
+    .card-section { padding: var(--space-6); }
+  }
+
+  /* 旧 alias */
+  .glass-card { @apply card-glass; }
+}
+
+/* -------------------------------------------------------------
+   5. Badges / Chips / Tags / KBD
+   ----------------------------------------------------------- */
+@layer components {
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 20px;
+    padding: 0 8px;
+    border-radius: var(--radius-pill);
+    font-size: var(--fs-tiny);
+    font-weight: var(--weight-semibold);
+    letter-spacing: var(--tracking-wide);
+    line-height: 1;
+    background: var(--surface-2);
+    color: var(--text-secondary);
+    white-space: nowrap;
+  }
+  .badge-klein   { background: var(--info-soft);    color: var(--klein-500); }
+  .badge-success { background: var(--success-soft); color: var(--success-500); }
+  .badge-warning { background: var(--warning-soft); color: var(--warning-500); }
+  .badge-danger  { background: var(--danger-soft);  color: var(--danger-500); }
+  .badge-solid   { background: var(--klein-500);    color: #fff; }
+  .badge-outline {
+    background: transparent;
+    border: 1px solid var(--border-strong);
+    color: var(--text-secondary);
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 28px;
+    padding: 0 10px;
+    border-radius: var(--radius-pill);
+    background: var(--surface-2);
+    color: var(--text-secondary);
+    font-size: var(--fs-small);
+    font-weight: var(--weight-medium);
+    cursor: pointer;
+    transition: background var(--duration-fast) var(--ease-out),
+                color var(--duration-fast) var(--ease-out);
+    border: 1px solid transparent;
+  }
+  .chip:hover { background: var(--surface-3); color: var(--text-primary); }
+  .chip-active {
+    background: var(--klein-gradient);
+    color: var(--text-on-klein);
+  }
+  .chip-active:hover { color: var(--text-on-klein); }
+  .chip-outline {
+    background: transparent;
+    border-color: var(--border-default);
+  }
+
+  .kbd {
+    display: inline-flex;
+    align-items: center;
+    height: 20px;
+    padding: 0 6px;
+    border: 1px solid var(--border-default);
+    border-bottom-width: 2px;
+    border-radius: var(--radius-xs);
+    font-family: var(--font-mono);
+    font-size: var(--fs-tiny);
+    color: var(--text-secondary);
+    background: var(--surface-1);
+  }
+}
+
+/* -------------------------------------------------------------
+   6. Page header / Section header
+   ----------------------------------------------------------- */
+@layer components {
+  /* 所有内容页统一的水平内边距与最大宽度。
+     默认 max-width 1280px，已充分覆盖侧栏外的可阅读宽度；
+     padding 在三档断点之间稳定阶梯，确保左右间距一致。 */
+  .page {
+    padding: var(--space-5) var(--space-5);
+    max-width: 1280px;
+    margin-inline: auto;
+    width: 100%;
+  }
+  @media (min-width: 768px)  { .page { padding: var(--space-6) var(--space-6); } }
+  @media (min-width: 1280px) { .page { padding: var(--space-8) var(--space-8); } }
+
+  /* 文档/表单/落地页等需要更窄阅读栏宽的页面 */
+  .page-narrow { max-width: 880px; }
+  /* 数据后台等需要更宽布局，仅 admin 用 */
+  .page-wide   { max-width: 1440px; }
+
+  .page-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: var(--space-4);
+    margin-bottom: var(--space-5);
+  }
+  .page-title {
+    font-size: var(--fs-h1);
+    line-height: var(--lh-tight);
+    letter-spacing: var(--tracking-tight);
+    font-weight: var(--weight-bold);
+    color: var(--text-primary);
+  }
+  .page-subtitle {
+    margin-top: 4px;
+    font-size: var(--fs-small);
+    color: var(--text-secondary);
+    line-height: var(--lh-normal);
+  }
+
+  .section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+  .section-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3);
+    justify-content: space-between;
+  }
+  .section-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: var(--fs-h4);
+    font-weight: var(--weight-semibold);
+    color: var(--text-primary);
+  }
+}
+
+/* -------------------------------------------------------------
+   7. Stat tiles / KPI blocks
+   ----------------------------------------------------------- */
+@layer components {
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr));
+    gap: var(--space-4);
+  }
+  .stat-tile {
+    background: var(--surface-1);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-lg);
+    padding: var(--space-5);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .stat-tile-accent {
+    background: var(--klein-gradient);
+    border-color: transparent;
+    color: var(--text-on-klein);
+    box-shadow: var(--klein-glow-soft);
+  }
+  .stat-label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: var(--fs-small);
+    color: var(--text-secondary);
+    font-weight: var(--weight-medium);
+  }
+  .stat-tile-accent .stat-label { color: rgba(255, 255, 255, .85); }
+  .stat-value {
+    font-size: var(--fs-h2);
+    font-weight: var(--weight-semibold);
+    line-height: var(--lh-tight);
+    letter-spacing: var(--tracking-tight);
+    word-break: break-all;
+  }
+  .stat-delta {
+    font-size: var(--fs-small);
+    color: var(--text-tertiary);
+  }
+  .stat-tile-accent .stat-delta { color: rgba(255, 255, 255, .85); }
+}
+
+/* -------------------------------------------------------------
+   8. List rows / data tables
+   ----------------------------------------------------------- */
+@layer components {
+  .data-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: var(--fs-body);
+  }
+  .data-table thead th {
+    text-align: left;
+    padding: 10px var(--space-5);
+    font-size: var(--fs-small);
+    font-weight: var(--weight-medium);
+    color: var(--text-secondary);
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--border-default);
+    white-space: nowrap;
+  }
+  .data-table thead th:first-child { border-top-left-radius: var(--radius-lg); }
+  .data-table thead th:last-child  { border-top-right-radius: var(--radius-lg); text-align: right; }
+  .data-table tbody td {
+    padding: 14px var(--space-5);
+    border-bottom: 1px solid var(--border-subtle);
+    color: var(--text-primary);
+    vertical-align: middle;
+  }
+  .data-table tbody td:last-child { text-align: right; }
+  .data-table tbody tr:last-child td { border-bottom: none; }
+  .data-table tbody tr:hover td { background: var(--surface-2); }
+
+  .list-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    padding: var(--space-4) var(--space-5);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .list-row:last-child { border-bottom: none; }
+}
+
+/* -------------------------------------------------------------
+   9. Empty state / Skeleton
+   ----------------------------------------------------------- */
+@layer components {
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    gap: var(--space-3);
+    padding: var(--space-12) var(--space-5);
+    color: var(--text-tertiary);
+  }
+  .empty-state-icon {
+    display: grid;
+    place-items: center;
+    width: 56px;
+    height: 56px;
+    border-radius: var(--radius-pill);
+    background: var(--klein-gradient-soft);
+    color: var(--klein-500);
+    margin-bottom: 4px;
+  }
+  .empty-state-title {
+    font-size: var(--fs-h4);
+    font-weight: var(--weight-semibold);
+    color: var(--text-primary);
+  }
+  .empty-state-desc {
+    font-size: var(--fs-small);
+    line-height: var(--lh-loose);
+    max-width: 32rem;
+  }
+
+  .skeleton {
+    background: linear-gradient(
+      90deg,
+      rgba(0, 47, 167, .06) 0%,
+      rgba(30, 61, 255, .14) 50%,
+      rgba(0, 47, 167, .06) 100%
+    );
+    background-size: 200% 100%;
+    animation: klein-shimmer 1.6s linear infinite;
+    border-radius: var(--radius-md);
+  }
+  .skeleton-text {
+    height: 12px;
+    border-radius: var(--radius-pill);
+  }
+}
+
+/* -------------------------------------------------------------
+   10. Misc · Divider / Dialog Surface / Tabs
+   ----------------------------------------------------------- */
+@layer components {
+  .divider {
+    height: 1px;
+    background: var(--border-default);
+    border: 0;
+  }
+  .divider-vertical {
+    width: 1px;
+    align-self: stretch;
+    background: var(--border-default);
+  }
+
+  .dialog-surface {
+    background: var(--surface-1);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-4);
+  }
+
+  .tabs {
+    display: inline-grid;
+    grid-auto-flow: column;
+    gap: 2px;
+    padding: 4px;
+    background: var(--surface-2);
+    border-radius: var(--radius-md);
+  }
+  .tab {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: var(--ctl-h-md);
+    padding-inline: var(--ctl-px-md);
+    font-size: var(--fs-small);
+    font-weight: var(--weight-medium);
+    color: var(--text-tertiary);
+    border-radius: calc(var(--radius-md) - 2px);
+    cursor: pointer;
+    transition: background var(--duration-base) var(--ease-out),
+                color var(--duration-base) var(--ease-out);
+    border: none;
+    background: transparent;
+  }
+  .tab:hover { color: var(--text-secondary); }
+  .tab[aria-selected='true'] {
+    background: var(--surface-1);
+    color: var(--text-primary);
+    box-shadow: var(--shadow-1);
+  }
+
+  /* Progress */
+  .progress {
+    width: 100%;
+    height: 6px;
+    border-radius: var(--radius-pill);
+    overflow: hidden;
+    background: var(--border-default);
+  }
+  .progress-bar {
+    height: 100%;
+    background: var(--klein-gradient);
+    transition: width var(--duration-slow) var(--ease-out);
+  }
+}

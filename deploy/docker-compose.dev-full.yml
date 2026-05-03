@@ -1,0 +1,200 @@
+# =====================================================
+# KleinAI · 全容器本地开发栈
+#
+# 与 docker-compose.dev.yml 的差别：
+#   - dev.yml         只起 mysql + redis，业务进程主机直跑（go run / pnpm dev）
+#   - dev-full.yml    全部 7 个服务都跑容器（适合不想装 Go / Node 的同学）
+#
+# 启动：
+#   cd deploy
+#   docker compose -f docker-compose.dev-full.yml up -d --build
+#
+# 端口（host -> container）：
+#   user-web    : 17080 -> 80     (→ 静态前端 + /api/* 代理 api:17180 + /v1/* 代理 openai:17200)
+#   admin-web   : 17088 -> 80     (→ 静态前端 + /admin/api/* 代理 admin:17188)
+#   api         : 17180 -> 17180  (可选直连用户 API，调试用)
+#   admin       : 17188 -> 17188  (可选直连后台 API，调试用)
+#   openai      : 17200 -> 17200  (可选直连 OpenAI 兼容 API)
+#   mysql       : 23306 -> 3306   (Hyper-V 占了 13306，临时换 23306)
+#   redis       : 16379 -> 6379
+# =====================================================
+
+x-backend-env: &backend-env
+  KLEIN_ENV: dev
+  KLEIN_DB_DSN: klein:klein123@tcp(mysql:3306)/klein_ai?charset=utf8mb4&parseTime=True&loc=Local
+  KLEIN_REDIS_ADDR: redis:6379
+  KLEIN_REDIS_PASSWORD: ''
+  KLEIN_REDIS_DB: '0'
+  KLEIN_JWT_SECRET: local-dev-jwt-secret-32bytes-please-change
+  KLEIN_JWT_REFRESH_SECRET: local-dev-jwt-refresh-secret-32bytes-please
+  KLEIN_JWT_ACCESS_TTL: 2h
+  KLEIN_JWT_REFRESH_TTL: 336h
+  KLEIN_AES_KEY: '00000000000000000000000000000000'
+  KLEIN_PROVIDER_GPT: mock
+  KLEIN_PROVIDER_GROK: mock
+  KLEIN_OPENAI_BASE: https://api.openai.com
+  KLEIN_GROK_BASE: https://api.x.ai
+  KLEIN_GPT_BASE_URL: https://api.openai.com
+  KLEIN_GROK_BASE_URL: https://api.x.ai
+  KLEIN_LOG_LEVEL: info
+  KLEIN_LOG_DIR: /app/logs
+  KLEIN_CORS_ORIGINS: http://localhost:17080,http://localhost:17088,http://127.0.0.1:17080,http://127.0.0.1:17088
+  TZ: Asia/Shanghai
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: klein-mysql-dev
+    restart: unless-stopped
+    command:
+      - --default-authentication-plugin=caching_sha2_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --innodb-buffer-pool-size=512M
+      - --max_connections=200
+      - --sql-mode=STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION
+    environment:
+      MYSQL_ROOT_PASSWORD: klein-root-dev
+      MYSQL_DATABASE: klein_ai
+      MYSQL_USER: klein
+      MYSQL_PASSWORD: klein123
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:${KLEIN_DEV_MYSQL_PORT:-23306}:3306"
+    volumes:
+      - klein-mysql-dev-data:/var/lib/mysql
+      - ./mysql-init/01-run-migrations.sh:/docker-entrypoint-initdb.d/01-run-migrations.sh:ro
+      - ../backend/migrations:/migrations:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-pklein-root-dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [klein-dev]
+
+  redis:
+    image: redis:7-alpine
+    container_name: klein-redis-dev
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "127.0.0.1:${KLEIN_DEV_REDIS_PORT:-16379}:6379"
+    volumes:
+      - klein-redis-dev-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [klein-dev]
+
+  # ---------- 4 个后端 cmd ----------
+  api:
+    image: kleinai/backend:dev
+    container_name: klein-api-dev
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    entrypoint: ["/app/api"]
+    user: "0:0"            # 复用同一镜像同一卷写日志，方便起见 dev 用 root
+    environment:
+      <<: *backend-env
+      KLEIN_NODE_ID: '1'
+    ports:
+      - "127.0.0.1:17180:17180"
+    volumes:
+      - klein-logs:/app/logs
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [klein-dev]
+    restart: unless-stopped
+
+  admin:
+    image: kleinai/backend:dev
+    container_name: klein-admin-dev
+    entrypoint: ["/app/admin"]
+    user: "0:0"
+    environment:
+      <<: *backend-env
+      KLEIN_NODE_ID: '2'
+    ports:
+      - "127.0.0.1:17188:17188"
+    volumes:
+      - klein-logs:/app/logs
+    depends_on:
+      api: { condition: service_started }
+    networks: [klein-dev]
+    restart: unless-stopped
+
+  openai:
+    image: kleinai/backend:dev
+    container_name: klein-openai-dev
+    entrypoint: ["/app/openai"]
+    user: "0:0"
+    environment:
+      <<: *backend-env
+      KLEIN_NODE_ID: '3'
+    ports:
+      - "127.0.0.1:17200:17200"
+    volumes:
+      - klein-logs:/app/logs
+    depends_on:
+      api: { condition: service_started }
+    networks: [klein-dev]
+    restart: unless-stopped
+
+  worker:
+    image: kleinai/backend:dev
+    container_name: klein-worker-dev
+    entrypoint: ["/app/worker"]
+    user: "0:0"
+    environment:
+      <<: *backend-env
+      KLEIN_NODE_ID: '4'
+    volumes:
+      - klein-logs:/app/logs
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [klein-dev]
+    restart: unless-stopped
+
+  # ---------- 前端静态 + 反代 ----------
+  user-web:
+    image: kleinai/user-web:dev
+    container_name: klein-user-web-dev
+    build:
+      context: ../frontend
+      dockerfile: apps/user/Dockerfile
+    ports:
+      - "127.0.0.1:17080:80"
+    volumes:
+      # 覆盖镜像内自带的 nginx.conf，加入 /api 与 /v1 反代
+      - ./nginx-dev/user-web.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on: [api, openai]
+    networks: [klein-dev]
+    restart: unless-stopped
+
+  admin-web:
+    image: kleinai/admin-web:dev
+    container_name: klein-admin-web-dev
+    build:
+      context: ../frontend
+      dockerfile: apps/admin/Dockerfile
+    ports:
+      - "127.0.0.1:17088:80"
+    volumes:
+      - ./nginx-dev/admin-web.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on: [admin]
+    networks: [klein-dev]
+    restart: unless-stopped
+
+volumes:
+  klein-mysql-dev-data:
+  klein-redis-dev-data:
+  klein-logs:
+
+networks:
+  klein-dev:
+    name: klein-dev-net

@@ -1,0 +1,42 @@
+import clsx from 'clsx';
+
+interface LogoProps {
+  size?: 'sm' | 'md' | 'lg';
+  /** 仅图标，不渲染文字 */
+  iconOnly?: boolean;
+  /** 头部独占文案（例如「管理后台」） */
+  suffix?: string;
+  className?: string;
+}
+
+const SIZE: Record<NonNullable<LogoProps['size']>, { icon: number; text: string }> = {
+  sm: { icon: 24, text: 'text-small' },
+  md: { icon: 30, text: 'text-h4' },
+  lg: { icon: 40, text: 'text-h3' },
+};
+
+export function Logo({ size = 'md', iconOnly = false, suffix, className }: LogoProps) {
+  const cfg = SIZE[size];
+  return (
+    <div className={clsx('flex items-center gap-2 select-none min-w-0', className)}>
+      <img
+        src="/logo-icon.png"
+        alt="gpt2api"
+        height={cfg.icon}
+        style={{ height: cfg.icon, width: 'auto' }}
+        draggable={false}
+        className="block object-contain shrink-0"
+      />
+      {!iconOnly && (
+        <span className={clsx(cfg.text, 'font-bold tracking-tight text-text-primary leading-none')}>
+          gpt<span className="gradient-text">2api</span>
+          {suffix && (
+            <span className="ml-2 align-middle text-tiny font-semibold tracking-wider uppercase text-text-tertiary">
+              {suffix}
+            </span>
+          )}
+        </span>
+      )}
+    </div>
+  );
+}
