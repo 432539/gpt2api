@@ -54,7 +54,7 @@ func (r *AccountRepo) List(ctx context.Context, f AccountListFilter) ([]*model.A
 	if f.Page <= 0 {
 		f.Page = 1
 	}
-	if f.PageSize <= 0 || f.PageSize > 200 {
+	if f.PageSize <= 0 || f.PageSize > 1000 {
 		f.PageSize = 20
 	}
 	q := r.db.WithContext(ctx).Model(&model.Account{}).Where("deleted_at IS NULL")
@@ -96,13 +96,65 @@ func (r *AccountRepo) SoftDelete(ctx context.Context, id uint64) error {
 		Where("id = ?", id).Update("deleted_at", time.Now().UTC()).Error
 }
 
+// SoftDeleteMany 按 ID 列表批量软删（仅未删除行）。
+func (r *AccountRepo) SoftDeleteMany(ctx context.Context, ids []uint64) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	now := time.Now().UTC()
+	res := r.db.WithContext(ctx).Model(&model.Account{}).
+		Where("id IN ? AND deleted_at IS NULL", ids).
+		Update("deleted_at", now)
+	return res.RowsAffected, res.Error
+}
+
+// SoftDeleteInvalid 软删：已禁用、熔断、或最近连通测试失败。
+func (r *AccountRepo) SoftDeleteInvalid(ctx context.Context, provider string) (int64, error) {
+	now := time.Now().UTC()
+	q := r.db.WithContext(ctx).Model(&model.Account{}).Where("deleted_at IS NULL").
+		Where("(last_test_status = ? OR status IN (?, ?))",
+			model.AccountTestFail, model.AccountStatusDisabled, model.AccountStatusBroken)
+	if provider != "" {
+		q = q.Where("provider = ?", provider)
+	}
+	res := q.Update("deleted_at", now)
+	return res.RowsAffected, res.Error
+}
+
+// SoftDeleteAll 软删当前条件下所有账号（未删行）。provider 空表示两池全量。
+// SoftDeleteZeroQuota soft-deletes accounts that have been quota-probed and have no remaining image quota.
+func (r *AccountRepo) SoftDeleteZeroQuota(ctx context.Context, provider string) (int64, error) {
+	now := time.Now().UTC()
+	q := r.db.WithContext(ctx).Model(&model.Account{}).Where("deleted_at IS NULL").
+		Where("oauth_meta IS NOT NULL").
+		Where("JSON_EXTRACT(oauth_meta, '$.image_quota_remaining') IS NOT NULL").
+		Where("CAST(JSON_UNQUOTE(JSON_EXTRACT(oauth_meta, '$.image_quota_remaining')) AS SIGNED) <= 0")
+	if provider != "" {
+		q = q.Where("provider = ?", provider)
+	}
+	res := q.Update("deleted_at", now)
+	return res.RowsAffected, res.Error
+}
+
+func (r *AccountRepo) SoftDeleteAll(ctx context.Context, provider string) (int64, error) {
+	now := time.Now().UTC()
+	q := r.db.WithContext(ctx).Model(&model.Account{}).Where("deleted_at IS NULL")
+	if provider != "" {
+		q = q.Where("provider = ?", provider)
+	}
+	res := q.Update("deleted_at", now)
+	return res.RowsAffected, res.Error
+}
+
 // AvailableByProvider 拿出给定 provider 下当前可用的账号（用于调度器装载）。
 func (r *AccountRepo) AvailableByProvider(ctx context.Context, provider string) ([]*model.Account, error) {
 	var items []*model.Account
 	now := time.Now().UTC()
 	err := r.db.WithContext(ctx).
-		Where("provider = ? AND status = ? AND deleted_at IS NULL", provider, model.AccountStatusEnabled).
+		Where("provider = ? AND deleted_at IS NULL", provider).
+		Where("(status = ? OR (status = ? AND cooldown_until IS NOT NULL AND cooldown_until <= ?))", model.AccountStatusEnabled, model.AccountStatusBroken, now).
 		Where("cooldown_until IS NULL OR cooldown_until <= ?", now).
+		Where("access_token_expires_at IS NULL OR access_token_expires_at > ?", now).
 		Order("id ASC").
 		Find(&items).Error
 	return items, err
@@ -113,8 +165,12 @@ func (r *AccountRepo) MarkUsed(ctx context.Context, id uint64) error {
 	now := time.Now().UTC()
 	return r.db.WithContext(ctx).Model(&model.Account{}).
 		Where("id = ?", id).Updates(map[string]any{
-		"last_used_at":  now,
-		"success_count": gorm.Expr("success_count + 1"),
+		"last_used_at":   now,
+		"success_count":  gorm.Expr("success_count + 1"),
+		"error_count":    0,
+		"status":         model.AccountStatusEnabled,
+		"cooldown_until": nil,
+		"last_error":     nil,
 	}).Error
 }
 
@@ -129,6 +185,9 @@ func (r *AccountRepo) MarkFailed(ctx context.Context, id uint64, reason string, 
 		until := now.Add(cooldown)
 		fields["cooldown_until"] = until
 		fields["status"] = model.AccountStatusBroken
+	} else {
+		fields["cooldown_until"] = nil
+		fields["status"] = model.AccountStatusEnabled
 	}
 	return r.db.WithContext(ctx).Model(&model.Account{}).
 		Where("id = ?", id).Updates(fields).Error

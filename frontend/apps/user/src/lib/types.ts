@@ -111,10 +111,11 @@ export type TaskStatus = 0 | 1 | 2 | 3 | 4 | 5;
 
 export interface GenerationTask {
   task_id: string;
-  kind: 'image' | 'video';
+  kind: 'image' | 'video' | 'chat';
   status: TaskStatus;
   progress: number;
   model: string;
+  prompt?: string;
   cost_points: number;
   error?: string;
   results?: GenerationResult[];
@@ -142,6 +143,34 @@ export interface CreateVideoBody {
   quality?: 'draft' | 'standard' | 'hd';
   ref_assets?: string[];
   params?: Record<string, unknown>;
+}
+
+export interface CreateTextBody {
+  model?: string;
+  prompt: string;
+  max_tokens?: number;
+  images?: string[];
+}
+
+export interface TextGenerationResp {
+  id: string;
+  model: string;
+  content: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+
+export interface PublicModel {
+  model_code: string;
+  name: string;
+  kind: 'text' | 'image' | 'video';
+  provider: string;
+  upstream_model?: string;
+  unit_points: number;
+  input_unit_points?: number;
+  output_unit_points?: number;
+  enabled: boolean;
 }
 
 export interface RedeemCDKResp {

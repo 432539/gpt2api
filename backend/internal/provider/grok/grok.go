@@ -3,16 +3,16 @@
 // GROK 公开 API 仍在演进中，本 provider 采用一个通用的"异步任务 + 轮询"协议，
 // 你可以把 base_url 指到任意兼容网关（kleinai-gateway / FAL / Runway 风格）：
 //
-//   POST {base_url}/v1/videos/generations
-//        Authorization: Bearer {api_key}
-//        Body: {"model","prompt","duration","aspect_ratio","ref_images":[]}
-//        Resp 200 either:
-//          A. {"task_id":"abc","status":"queued"}            // 异步
-//          B. {"data":[{"url":"https://..."}], "duration_ms":... } // 同步直返
+//	POST {base_url}/v1/videos/generations
+//	     Authorization: Bearer {api_key}
+//	     Body: {"model","prompt","duration","aspect_ratio","ref_images":[]}
+//	     Resp 200 either:
+//	       A. {"task_id":"abc","status":"queued"}            // 异步
+//	       B. {"data":[{"url":"https://..."}], "duration_ms":... } // 同步直返
 //
-//   GET {base_url}/v1/videos/tasks/{task_id}
-//        Resp: {"task_id","status":"queued|running|succeeded|failed",
-//               "data":[{"url":"...","duration_ms":...}], "error":""}
+//	GET {base_url}/v1/videos/tasks/{task_id}
+//	     Resp: {"task_id","status":"queued|running|succeeded|failed",
+//	            "data":[{"url":"...","duration_ms":...}], "error":""}
 //
 // 调度器内置超时：默认 12min，单次轮询间隔 3s（指数 backoff 上限 10s）。
 package grok
@@ -31,7 +31,7 @@ import (
 )
 
 const (
-	defaultBaseURL    = "https://api.x.ai"
+	defaultBaseURL    = webBaseURL
 	httpTimeout       = 30 * time.Second
 	pollMaxDur        = 12 * time.Minute
 	pollInitialPeriod = 3 * time.Second
@@ -43,6 +43,7 @@ type Provider struct {
 	client     *http.Client
 	defaultURL string
 	name       string
+	web        *WebClient
 }
 
 // New 构造。
@@ -56,6 +57,7 @@ func New(defaultBase string) *Provider {
 		},
 		defaultURL: strings.TrimRight(defaultBase, "/"),
 		name:       "grok",
+		web:        NewWebClient(defaultBase),
 	}
 }
 
@@ -96,18 +98,56 @@ func (p *Provider) Generate(ctx context.Context, req *provider.Request) (*provid
 	if req.Credential == "" {
 		return nil, fmt.Errorf("grok provider missing credential")
 	}
-
 	base := req.BaseURL
 	if base == "" {
 		base = p.defaultURL
 	}
+	if base == "" || strings.Contains(base, "grok.com") || strings.Contains(base, "api.x.ai") {
+		web := p.web
+		if req.ProxyURL != "" || req.BaseURL != "" {
+			web = NewWebClientWithProxy(req.BaseURL, req.ProxyURL)
+		}
+		web = web.WithUpstreamLogger(req.UpstreamLog)
+		count := req.Count
+		if count <= 0 {
+			count = 1
+		}
+		assets := make([]provider.Asset, 0, count)
+		for i := 0; i < count; i++ {
+			items, err := web.GenerateVideo(ctx, req.Credential, VideoRequest{
+				ModelCode:   NormalizeVideoModel(req.ModelCode),
+				Prompt:      req.Prompt,
+				Refs:        req.RefAssets,
+				DurationSec: intParam(req.Params, "duration", 6),
+				Size:        strParam(req.Params, "size", ""),
+				AspectRatio: strParam(req.Params, "aspect_ratio", ""),
+				Quality:     strParam(req.Params, "quality", ""),
+				Count:       1,
+			})
+			if err != nil {
+				return nil, err
+			}
+			for _, it := range items {
+				assets = append(assets, provider.Asset{
+					URL:        it.URL,
+					ThumbURL:   it.ThumbURL,
+					Width:      it.Width,
+					Height:     it.Height,
+					DurationMs: it.DurationMs,
+					Mime:       "video/mp4",
+				})
+			}
+		}
+		return &provider.Result{TaskID: req.TaskID, Assets: assets}, nil
+	}
+
 	base = strings.TrimRight(base, "/")
 
 	count := req.Count
 	if count <= 0 {
 		count = 1
 	}
-	dur := intParam(req.Params, "duration", 4)
+	dur := normalizeVideoDuration(intParam(req.Params, "duration", 6))
 	aspect := strParam(req.Params, "aspect_ratio", "16:9")
 
 	body := vidCreateReq{

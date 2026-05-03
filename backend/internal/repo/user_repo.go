@@ -18,6 +18,13 @@ type UserRepo struct{ db *gorm.DB }
 // NewUserRepo 构造。
 func NewUserRepo(db *gorm.DB) *UserRepo { return &UserRepo{db: db} }
 
+type UserListFilter struct {
+	Keyword  string
+	Status   *int
+	Page     int
+	PageSize int
+}
+
 func (r *UserRepo) Create(ctx context.Context, u *model.User) error {
 	return r.db.WithContext(ctx).Create(u).Error
 }
@@ -72,6 +79,40 @@ func (r *UserRepo) GetByInviteCode(ctx context.Context, code string) (*model.Use
 		return nil, mapErr(err)
 	}
 	return &u, nil
+}
+
+func (r *UserRepo) List(ctx context.Context, f UserListFilter) ([]*model.User, int64, error) {
+	if f.Page <= 0 {
+		f.Page = 1
+	}
+	if f.PageSize <= 0 || f.PageSize > 200 {
+		f.PageSize = 20
+	}
+	q := r.db.WithContext(ctx).Model(&model.User{}).Where("deleted_at IS NULL")
+	if f.Status != nil {
+		q = q.Where("status = ?", *f.Status)
+	}
+	if kw := strings.TrimSpace(f.Keyword); kw != "" {
+		like := "%" + kw + "%"
+		q = q.Where("CAST(id AS CHAR) = ? OR uuid = ? OR email LIKE ? OR phone LIKE ? OR username LIKE ? OR invite_code = ?",
+			kw, kw, like, like, like, kw)
+	}
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	var items []*model.User
+	err := q.Order("id DESC").Offset((f.Page - 1) * f.PageSize).Limit(f.PageSize).Find(&items).Error
+	return items, total, err
+}
+
+func (r *UserRepo) Update(ctx context.Context, id uint64, fields map[string]any) error {
+	if len(fields) == 0 {
+		return nil
+	}
+	return r.db.WithContext(ctx).Model(&model.User{}).
+		Where("id = ? AND deleted_at IS NULL", id).
+		Updates(fields).Error
 }
 
 func (r *UserRepo) UpdateLogin(ctx context.Context, id uint64, ip string) error {

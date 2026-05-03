@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/kleinai/backend/pkg/errcode"
-	"github.com/kleinai/backend/pkg/proxyx"
+	"github.com/kleinai/backend/pkg/outbound"
 )
 
 // OpenAITokenResponse OAuth Token 响应（Codex CLI 流）。
@@ -38,19 +38,23 @@ func NewOpenAIOAuthService(cfg *SystemConfigService) *OpenAIOAuthService {
 // RefreshToken 用 refresh_token 兑换新 access_token。
 //
 // proxyURL 可空字符串（直连）；返回的 RefreshToken 可能为空，调用方需自行保留旧值。
-func (s *OpenAIOAuthService) RefreshToken(ctx context.Context, refreshToken, proxyURL string) (*OpenAITokenResponse, error) {
+func (s *OpenAIOAuthService) RefreshToken(ctx context.Context, refreshToken, clientID, proxyURL string) (*OpenAITokenResponse, error) {
 	refreshToken = strings.TrimSpace(refreshToken)
 	if refreshToken == "" {
 		return nil, errcode.InvalidParam.WithMsg("缺少 refresh_token")
 	}
-	clientID := s.cfg.OpenAIClientID(ctx)
+	clientID = strings.TrimSpace(clientID)
+	if clientID == "" {
+		clientID = s.cfg.OpenAIClientID(ctx)
+	}
 	tokenURL := s.cfg.OpenAITokenURL(ctx)
 
-	pu, err := proxyx.Parse(proxyURL)
-	if err != nil {
-		return nil, errcode.Internal.Wrap(err)
-	}
-	client, err := proxyx.BuildClient(pu, 30*time.Second)
+	client, err := outbound.NewClient(outbound.Options{
+		ProxyURL: proxyURL,
+		Timeout:  30 * time.Second,
+		Mode:     outbound.ModeUTLS,
+		Profile:  outbound.ProfileChrome,
+	})
 	if err != nil {
 		return nil, errcode.Internal.Wrap(err)
 	}

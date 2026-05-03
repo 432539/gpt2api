@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS `proxy` (
 -- account 表扩展：proxy_id + OAuth 元数据 + 测试结果
 ALTER TABLE `account`
   ADD COLUMN `proxy_id`               BIGINT UNSIGNED DEFAULT NULL AFTER `base_url`,
-  ADD COLUMN `oauth_meta`              JSON         DEFAULT NULL AFTER `credential_enc`     COMMENT '非敏感 OAuth 元数据：email / chatgpt_account_id / plan_type 等',
+  ADD COLUMN `oauth_meta`              JSON         DEFAULT NULL                            COMMENT '非敏感 OAuth 元数据：email / chatgpt_account_id / plan_type 等' AFTER `credential_enc`,
   ADD COLUMN `access_token_enc`        BLOB         DEFAULT NULL                            COMMENT 'AES-256-GCM 加密的 access_token',
   ADD COLUMN `refresh_token_enc`       BLOB         DEFAULT NULL                            COMMENT 'AES-256-GCM 加密的 refresh_token',
   ADD COLUMN `access_token_expires_at` DATETIME(3)  DEFAULT NULL                            COMMENT 'access_token 失效时间',

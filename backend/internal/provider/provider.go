@@ -14,6 +14,7 @@ import (
 type Kind string
 
 const (
+	KindChat  Kind = "chat"
 	KindImage Kind = "image"
 	KindVideo Kind = "video"
 )
@@ -44,8 +45,26 @@ type Request struct {
 	// 调用方负责解密，provider 不再持有 AESGCM。
 	Credential string
 	// BaseURL 优先级：account.base_url > provider 默认。
-	BaseURL string
+	BaseURL  string
+	ProxyURL string
+	// UpstreamLog records provider stage diagnostics for admin troubleshooting.
+	UpstreamLog UpstreamLogger
 }
+
+type UpstreamLogEntry struct {
+	Provider        string
+	Stage           string
+	Method          string
+	URL             string
+	StatusCode      int
+	DurationMs      int64
+	RequestExcerpt  string
+	ResponseExcerpt string
+	Error           string
+	Meta            map[string]any
+}
+
+type UpstreamLogger func(ctx context.Context, entry UpstreamLogEntry)
 
 // Asset 单个生成资产（一张图 / 一段视频）。
 type Asset struct {

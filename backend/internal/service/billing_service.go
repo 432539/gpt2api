@@ -36,12 +36,12 @@ func NewBillingService(db *gorm.DB, w *repo.WalletRepo) *BillingService {
 
 // PreDeductReq 预扣点请求。
 type PreDeductReq struct {
-	UserID      uint64
-	TaskID      string
-	Kind        string // image / video
-	ModelCode   string
-	Count       int
-	UnitPoints  int64
+	UserID     uint64
+	TaskID     string
+	Kind       string // image / video
+	ModelCode  string
+	Count      int
+	UnitPoints int64
 }
 
 // PreDeduct 预扣点 + 写 consume_record(status=frozen)。
@@ -98,6 +98,64 @@ func (s *BillingService) Settle(ctx context.Context, taskID string, accountID *u
 		return errcode.DBError.Wrap(err)
 	}
 	logger.FromCtx(ctx).Info("billing.settle", zap.String("task", taskID), zap.Int64("points", rec.TotalPoints))
+	return nil
+}
+
+// FinalizeUsage settles a frozen usage-based consume record with the actual cost.
+// If actual is lower than the estimate, the difference is refunded before settling.
+// If actual is higher than the estimate, the extra cost is deducted immediately when balance allows.
+func (s *BillingService) FinalizeUsage(ctx context.Context, taskID string, actualPoints int64, accountID *uint64) error {
+	var rec model.ConsumeRecord
+	if err := s.db.WithContext(ctx).Where("task_id = ?", taskID).First(&rec).Error; err != nil {
+		return errcode.ResourceMissing
+	}
+	if rec.Status != model.ConsumeStatusFrozen {
+		return nil
+	}
+	if actualPoints < 0 {
+		actualPoints = 0
+	}
+	estimated := rec.TotalPoints
+	if actualPoints == 0 {
+		if err := s.wallet.Refund(ctx, rec.UserID, taskID, "usage cost is zero", estimated); err != nil {
+			return errcode.DBError.Wrap(err)
+		}
+		return s.db.WithContext(ctx).Model(&model.ConsumeRecord{}).
+			Where("task_id = ?", taskID).
+			Updates(map[string]any{"status": model.ConsumeStatusRefunded, "unit_points": 0, "total_points": 0}).Error
+	}
+	if actualPoints < estimated {
+		if err := s.wallet.RefundFrozenPart(ctx, rec.UserID, taskID, "chat usage refund", estimated-actualPoints); err != nil {
+			return errcode.DBError.Wrap(err)
+		}
+	} else if actualPoints > estimated {
+		// Settle estimated frozen points first, then charge the extra balance.
+		if err := s.wallet.Settle(ctx, rec.UserID, estimated); err != nil {
+			return errcode.DBError.Wrap(err)
+		}
+		if _, err := s.wallet.Adjust(ctx, rec.UserID, model.BizConsume, taskID+":extra", -(actualPoints - estimated), rec.ModelCode+" extra usage", false); err != nil {
+			if errors.Is(err, repo.ErrInsufficient) {
+				return errcode.InsufficientPoints
+			}
+			return errcode.DBError.Wrap(err)
+		}
+		updates := map[string]any{"status": model.ConsumeStatusSettled, "unit_points": actualPoints, "total_points": actualPoints}
+		if accountID != nil {
+			updates["account_id"] = *accountID
+		}
+		return s.db.WithContext(ctx).Model(&model.ConsumeRecord{}).Where("task_id = ?", taskID).Updates(updates).Error
+	}
+	if err := s.wallet.Settle(ctx, rec.UserID, actualPoints); err != nil {
+		return errcode.DBError.Wrap(err)
+	}
+	updates := map[string]any{"status": model.ConsumeStatusSettled, "unit_points": actualPoints, "total_points": actualPoints}
+	if accountID != nil {
+		updates["account_id"] = *accountID
+	}
+	if err := s.db.WithContext(ctx).Model(&model.ConsumeRecord{}).Where("task_id = ?", taskID).Updates(updates).Error; err != nil {
+		return errcode.DBError.Wrap(err)
+	}
+	logger.FromCtx(ctx).Info("billing.finalize_usage", zap.String("task", taskID), zap.Int64("estimate", estimated), zap.Int64("actual", actualPoints))
 	return nil
 }
 

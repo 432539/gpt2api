@@ -41,6 +41,7 @@ type Account struct {
 	OAuthMeta            *string    `gorm:"column:oauth_meta;type:json" json:"oauth_meta,omitempty"`
 	AccessTokenEnc       []byte     `gorm:"column:access_token_enc;type:blob" json:"-"`
 	RefreshTokenEnc      []byte     `gorm:"column:refresh_token_enc;type:blob" json:"-"`
+	SessionTokenEnc      []byte     `gorm:"column:session_token_enc;type:blob" json:"-"`
 	AccessTokenExpiresAt *time.Time `gorm:"column:access_token_expires_at" json:"access_token_expires_at,omitempty"`
 	LastRefreshAt        *time.Time `gorm:"column:last_refresh_at" json:"last_refresh_at,omitempty"`
 	BaseURL              *string    `gorm:"column:base_url;size:255" json:"base_url,omitempty"`

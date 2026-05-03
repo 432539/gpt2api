@@ -30,7 +30,7 @@ const KeyPrefix = "sk-klein-"
 func (s *APIKeyService) Create(ctx context.Context, userID uint64, req *dto.APIKeyCreateReq) (*dto.APIKeyCreateResp, error) {
 	scope := strings.TrimSpace(req.Scope)
 	if scope == "" {
-		scope = "image,video"
+		scope = "chat,image,video"
 	}
 
 	body, err := crypto.RandomString(40)

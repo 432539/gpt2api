@@ -4,21 +4,258 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ===========================================================
-   user app · 仅保留站点级覆盖；
-   按钮 / 表单 / 卡片 / 文字 等统一在 @kleinai/theme/components.css
-   =========================================================== */
+/* User app shell overrides. Keep the public app quiet and close to the
+   reference: white canvas, thin borders, soft controls, little decoration. */
 
 @layer base {
-  /* 用户端创作页默认深色，文本使用稍紧的 line-height 提升信息密度 */
+  :root {
+    --surface-bg: #ffffff;
+    --surface-1: #ffffff;
+    --surface-2: #f7f7f8;
+    --surface-3: #eeeeef;
+    --border-default: #e5e5e5;
+    --border-strong: #d4d4d4;
+    --text-primary: #111111;
+    --text-secondary: #525252;
+    --text-tertiary: #8a8a8a;
+    --klein-gradient: linear-gradient(135deg, #111111 0%, #333333 100%);
+    --klein-gradient-soft: #f7f7f8;
+    --klein-glow: none;
+    --klein-glow-soft: none;
+    --focus-ring: 0 0 0 3px rgba(17, 17, 17, .08);
+  }
+
   body {
+    background: #ffffff;
     line-height: 1.5;
   }
 }
 
 @layer components {
-  /* 创作区可滚动主体的统一阴影遮罩 */
-  .creative-pane {
-    @apply rounded-lg border border-border bg-surface-1 shadow-2;
+  .text-display,
+  .text-h1,
+  .text-h2,
+  .text-h3,
+  .text-h4 {
+    font-weight: 500;
+    letter-spacing: 0;
   }
+
+  .card,
+  .card-flat,
+  .card-elevated,
+  .card-glass,
+  .card-tinted,
+  .creative-pane {
+    border: 1px solid #e5e5e5;
+    border-radius: 24px;
+    background: #ffffff;
+    box-shadow: none;
+  }
+
+  .card-section {
+    padding: 24px;
+  }
+
+  .btn {
+    border-radius: 999px;
+    box-shadow: none;
+  }
+
+  .btn-primary,
+  .btn-klein {
+    background: #111111;
+    color: #ffffff;
+    border-color: #111111;
+    box-shadow: none;
+  }
+
+  .btn-primary:hover:not(:disabled):not([aria-disabled='true']),
+  .btn-klein:hover:not(:disabled):not([aria-disabled='true']) {
+    background: #2a2a2a;
+    border-color: #2a2a2a;
+    box-shadow: none;
+    filter: none;
+  }
+
+  .btn-secondary {
+    background: #f5f5f5;
+    color: #111111;
+    border-color: #e5e5e5;
+  }
+
+  .btn-secondary:hover:not(:disabled):not([aria-disabled='true']),
+  .btn-outline:hover:not(:disabled):not([aria-disabled='true']) {
+    background: #eeeeef;
+    border-color: #d4d4d4;
+    color: #111111;
+  }
+
+  .input,
+  .select,
+  .textarea {
+    border-radius: 18px;
+    border-color: #e5e5e5;
+    background: #ffffff;
+    box-shadow: none;
+  }
+
+  .input::placeholder,
+  .select::placeholder,
+  .textarea::placeholder {
+    color: #9ca3af;
+    font-weight: 400;
+  }
+
+  .input:focus,
+  .select:focus,
+  .textarea:focus {
+    border-color: #e5e5e5;
+    box-shadow: none;
+    outline: none;
+  }
+
+  .studio-prompt,
+  .studio-prompt:hover,
+  .studio-prompt:focus,
+  .studio-prompt:focus-visible,
+  .studio-prompt:active {
+    border: 0 !important;
+    outline: none !important;
+    box-shadow: none !important;
+    --tw-ring-shadow: 0 0 #0000 !important;
+    --tw-ring-offset-shadow: 0 0 #0000 !important;
+  }
+
+  .generating-dots {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    border-radius: inherit;
+    background: #fafafa;
+  }
+
+  .generating-dots::before,
+  .generating-dots::after {
+    content: '';
+    position: absolute;
+    inset: 7%;
+    background-image: radial-gradient(circle, rgba(17, 17, 17, .34) 1.45px, transparent 1.75px);
+    background-size: 24px 24px;
+    background-position: center;
+    mask-image: radial-gradient(circle at 58% 48%, #000 0 34%, rgba(0, 0, 0, .68) 48%, transparent 72%);
+    -webkit-mask-image: radial-gradient(circle at 58% 48%, #000 0 34%, rgba(0, 0, 0, .68) 48%, transparent 72%);
+    animation: generating-dots-drift 2.8s ease-in-out infinite;
+  }
+
+  .generating-dots::after {
+    inset: 12%;
+    opacity: .42;
+    background-size: 16px 16px;
+    animation: generating-dots-pulse 1.8s ease-in-out infinite;
+  }
+
+  .generating-dots__phrases {
+    position: absolute;
+    left: 50%;
+    top: 56%;
+    z-index: 3;
+    width: min(86%, 280px);
+    height: 32px;
+    transform: translate(-50%, -50%);
+  }
+
+  .generating-dots__phrase {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: rgba(17, 17, 17, .72);
+    font-size: 14px;
+    line-height: 1.4;
+    letter-spacing: 0;
+    text-align: center;
+    white-space: nowrap;
+    text-shadow: 0 1px 0 rgba(255, 255, 255, .8);
+  }
+
+  .generating-dots__phrase--active {
+    animation: generating-phrase-fade 1.8s ease-in-out;
+  }
+}
+
+@keyframes generating-dots-drift {
+  0%, 100% {
+    opacity: .45;
+    transform: translate3d(-5px, -3px, 0) scale(.98);
+  }
+  50% {
+    opacity: .9;
+    transform: translate3d(6px, 5px, 0) scale(1.02);
+  }
+}
+
+@keyframes generating-dots-pulse {
+  0%, 100% {
+    opacity: .18;
+    transform: scale(.94);
+  }
+  50% {
+    opacity: .48;
+    transform: scale(1.04);
+  }
+}
+
+@keyframes generating-phrase-fade {
+  0% {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  18% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  82% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+/* Final user-app typography pass: this front end should feel light and quiet.
+   Override Tailwind font weight utilities that individual pages still use. */
+#root :where(
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6,
+  p,
+  span,
+  a,
+  button,
+  label,
+  input,
+  textarea,
+  select,
+  td,
+  th,
+  strong,
+  b,
+  .btn,
+  .tab,
+  .field-label,
+  .text-display,
+  .text-h1,
+  .text-h2,
+  .text-h3,
+  .text-h4,
+  .font-bold,
+  .font-semibold,
+  .font-medium
+) {
+  font-weight: 400 !important;
 }

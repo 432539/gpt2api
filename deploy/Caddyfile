@@ -1,0 +1,39 @@
+gpt2api.com, www.gpt2api.com {
+	encode gzip zstd
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+
+	handle /api/v1/* {
+		reverse_proxy api:17180
+	}
+
+	handle /v1/* {
+		reverse_proxy openai:17200
+	}
+
+	handle {
+		reverse_proxy user-web:80
+	}
+}
+
+admin.gpt2api.com {
+	encode gzip zstd
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+
+	handle /admin/api/* {
+		reverse_proxy admin:17188
+	}
+
+	handle {
+		reverse_proxy admin-web:80
+	}
+}

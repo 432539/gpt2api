@@ -1,10 +1,8 @@
-// 全局登录浮层：未登录用户在生成等关键动作处弹出。
-// 与 /login 路由独立，不切换页面，登录成功后自动回放被拦截的动作。
 import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { X, LogIn, UserPlus } from 'lucide-react';
+import { LogIn, UserPlus, X } from 'lucide-react';
 import clsx from 'clsx';
 
 import { ApiError } from '../lib/api';
@@ -26,8 +24,8 @@ const registerSchema = z
       .string()
       .min(8, '密码至少 8 位')
       .max(64, '密码过长')
-      .regex(/[A-Za-z]/, '密码需包含字母')
-      .regex(/[0-9]/, '密码需包含数字'),
+      .regex(/[A-Za-z]/, '密码需要包含字母')
+      .regex(/[0-9]/, '密码需要包含数字'),
     confirm: z.string(),
     invite_code: z.string().max(16).optional().or(z.literal('')),
   })
@@ -50,7 +48,6 @@ export function LoginGate() {
     if (open) setTab(initialTab);
   }, [open, initialTab]);
 
-  // ESC 关闭 + 滚动锁
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -74,73 +71,63 @@ export function LoginGate() {
       aria-label="登录或注册"
       className="fixed inset-0 z-[80] grid place-items-center px-4 py-10"
     >
-      {/* 背景遮罩 */}
       <button
         aria-label="关闭"
         type="button"
-        className="absolute inset-0 bg-black/55 backdrop-blur-sm"
+        className="absolute inset-0 bg-black/35 backdrop-blur-sm"
         onClick={closeGate}
       />
 
-      {/* 弹层主体 */}
-      <div
-        className={clsx(
-          'dialog-surface relative w-full max-w-[440px] klein-fade-in overflow-hidden',
-        )}
-      >
-        <div className="h-1.5 bg-klein-gradient" />
-
-        <div className="flex items-start justify-between px-6 pt-5 gap-2">
+      <div className="relative w-full max-w-[440px] overflow-hidden rounded-[28px] border border-neutral-200 bg-white p-6 shadow-[0_24px_80px_rgba(0,0,0,.18)] klein-fade-in">
+        <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <h2 className="text-h3 text-text-primary">
+            <h2 className="text-[26px] font-medium leading-tight text-neutral-950">
               {tab === 'login' ? '欢迎回来' : '创建账号'}
             </h2>
-            <p className="text-small text-text-secondary mt-1">{hint}</p>
+            <p className="mt-2 text-[15px] text-neutral-500">{hint}</p>
           </div>
           <button
             type="button"
             aria-label="关闭"
-            className="btn btn-ghost btn-icon btn-sm -mr-2"
+            className="grid h-9 w-9 flex-shrink-0 place-items-center rounded-full text-neutral-500 transition hover:bg-neutral-100 hover:text-neutral-950"
             onClick={closeGate}
           >
-            <X size={18} />
+            <X size={20} />
           </button>
         </div>
 
-        <div className="px-6 pt-4">
-          <div role="tablist" className="tabs w-full grid grid-cols-2">
-            <button
-              role="tab"
-              aria-selected={tab === 'login'}
-              type="button"
-              onClick={() => setTab('login')}
-              className="tab"
-            >
-              <LogIn size={14} /> 登录
-            </button>
-            <button
-              role="tab"
-              aria-selected={tab === 'register'}
-              type="button"
-              onClick={() => setTab('register')}
-              className="tab"
-            >
-              <UserPlus size={14} /> 注册
-            </button>
-          </div>
+        <div className="mt-6 grid grid-cols-2 rounded-full bg-neutral-100 p-1">
+          <button
+            role="tab"
+            aria-selected={tab === 'login'}
+            type="button"
+            onClick={() => setTab('login')}
+            className={clsx(
+              'inline-flex h-11 items-center justify-center gap-2 rounded-full text-[15px] transition',
+              tab === 'login' ? 'bg-white font-medium text-neutral-950 shadow-sm' : 'text-neutral-500',
+            )}
+          >
+            <LogIn size={16} /> 登录
+          </button>
+          <button
+            role="tab"
+            aria-selected={tab === 'register'}
+            type="button"
+            onClick={() => setTab('register')}
+            className={clsx(
+              'inline-flex h-11 items-center justify-center gap-2 rounded-full text-[15px] transition',
+              tab === 'register' ? 'bg-white font-medium text-neutral-950 shadow-sm' : 'text-neutral-500',
+            )}
+          >
+            <UserPlus size={16} /> 注册
+          </button>
         </div>
 
-        <div className="px-6 py-5">
-          {tab === 'login' ? (
-            <LoginForm onDone={resolve} />
-          ) : (
-            <RegisterForm onDone={resolve} />
-          )}
+        <div className="py-6">
+          {tab === 'login' ? <LoginForm onDone={resolve} /> : <RegisterForm onDone={resolve} />}
         </div>
 
-        <p className="px-6 pb-5 text-tiny text-text-tertiary text-center">
-          登录即代表同意服务条款与隐私政策
-        </p>
+        <p className="text-center text-xs text-neutral-400">登录即代表同意服务条款与隐私政策</p>
       </div>
     </div>
   );
@@ -175,7 +162,7 @@ function LoginForm({ onDone }: { onDone: () => void }) {
     <form className="space-y-3" onSubmit={handleSubmit(onSubmit)} noValidate>
       <div className="field">
         <input
-          className={clsx('input', errors.account && 'input-error')}
+          className={clsx('input h-14 rounded-2xl text-[15px] font-normal placeholder:font-normal', errors.account && 'input-error')}
           placeholder="邮箱 / 手机号 / 用户名"
           autoComplete="username"
           {...register('account')}
@@ -184,7 +171,7 @@ function LoginForm({ onDone }: { onDone: () => void }) {
       </div>
       <div className="field">
         <input
-          className={clsx('input', errors.password && 'input-error')}
+          className={clsx('input h-14 rounded-2xl text-[15px] font-normal placeholder:font-normal', errors.password && 'input-error')}
           type="password"
           placeholder="密码"
           autoComplete="current-password"
@@ -192,8 +179,8 @@ function LoginForm({ onDone }: { onDone: () => void }) {
         />
         {errors.password && <p className="field-error">{errors.password.message}</p>}
       </div>
-      <button className="btn btn-primary btn-lg btn-block" type="submit" disabled={isSubmitting}>
-        {isSubmitting ? '登录中…' : '登 录'}
+      <button className="btn btn-primary btn-lg btn-block h-14 text-[17px]" type="submit" disabled={isSubmitting}>
+        {isSubmitting ? '登录中...' : '登录'}
       </button>
     </form>
   );
@@ -232,7 +219,7 @@ function RegisterForm({ onDone }: { onDone: () => void }) {
     <form className="space-y-3" onSubmit={handleSubmit(onSubmit)} noValidate>
       <div className="field">
         <input
-          className={clsx('input', errors.account && 'input-error')}
+          className={clsx('input h-14 rounded-2xl text-[15px] font-normal placeholder:font-normal', errors.account && 'input-error')}
           placeholder="邮箱 / 手机号 / 用户名"
           autoComplete="username"
           {...register('account')}
@@ -241,9 +228,9 @@ function RegisterForm({ onDone }: { onDone: () => void }) {
       </div>
       <div className="field">
         <input
-          className={clsx('input', errors.password && 'input-error')}
+          className={clsx('input h-14 rounded-2xl text-[15px] font-normal placeholder:font-normal', errors.password && 'input-error')}
           type="password"
-          placeholder="≥ 8 位，含字母与数字"
+          placeholder="至少 8 位，包含字母与数字"
           autoComplete="new-password"
           {...register('password')}
         />
@@ -251,7 +238,7 @@ function RegisterForm({ onDone }: { onDone: () => void }) {
       </div>
       <div className="field">
         <input
-          className={clsx('input', errors.confirm && 'input-error')}
+          className={clsx('input h-14 rounded-2xl text-[15px] font-normal placeholder:font-normal', errors.confirm && 'input-error')}
           type="password"
           placeholder="再次输入密码"
           autoComplete="new-password"
@@ -260,10 +247,10 @@ function RegisterForm({ onDone }: { onDone: () => void }) {
         {errors.confirm && <p className="field-error">{errors.confirm.message}</p>}
       </div>
       <div className="field">
-        <input className="input" placeholder="邀请码（选填，可获额外点数）" {...register('invite_code')} />
+        <input className="input h-14 rounded-2xl text-[15px] font-normal placeholder:font-normal" placeholder="邀请码（选填）" {...register('invite_code')} />
       </div>
-      <button className="btn btn-primary btn-lg btn-block" type="submit" disabled={isSubmitting}>
-        {isSubmitting ? '创建中…' : '创 建 账 号'}
+      <button className="btn btn-primary btn-lg btn-block h-14 text-[17px]" type="submit" disabled={isSubmitting}>
+        {isSubmitting ? '创建中...' : '创建账号'}
       </button>
     </form>
   );

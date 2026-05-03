@@ -95,7 +95,7 @@ api.interceptors.response.use(
   (err: AxiosError<ApiBody<unknown>>) => {
     const status = err.response?.status;
     const body = err.response?.data;
-    const msg = body?.msg ?? err.message ?? '网络异常';
+    const msg = body?.msg ?? friendlyHttpError(status, err.message);
     const code = body?.code ?? status ?? -1;
     if (status === 401) {
       clearToken();
@@ -106,6 +106,14 @@ api.interceptors.response.use(
     );
   },
 );
+
+function friendlyHttpError(status?: number, raw?: string) {
+  if (status === 502 || status === 503 || status === 504) return '服务正在更新或繁忙，请稍后重试';
+  if (status === 413) return '上传内容过大，请压缩后重试';
+  if (status === 429) return '操作过于频繁，请稍后重试';
+  if (!status && raw === 'Network Error') return '网络连接异常，请检查网络后重试';
+  return raw || '网络异常';
+}
 
 /** 统一请求并解构 data，抹平 axios 返回结构 */
 export async function request<T = unknown>(cfg: AxiosRequestConfig): Promise<T> {

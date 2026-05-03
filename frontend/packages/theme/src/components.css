@@ -678,6 +678,61 @@
     box-shadow: var(--shadow-4);
   }
 
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(15, 23, 42, .42);
+    backdrop-filter: blur(8px);
+  }
+
+  .modal-panel {
+    width: min(100%, 640px);
+    max-height: min(86vh, 760px);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface-1);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-4);
+  }
+
+  .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 18px 20px 12px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .modal-header h2 {
+    margin: 0;
+    font-size: var(--fs-h4);
+    line-height: var(--lh-snug);
+    font-weight: var(--weight-medium);
+    color: var(--text-primary);
+  }
+
+  .modal-body {
+    padding: 16px 20px;
+    overflow: auto;
+  }
+
+  .modal-footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 12px 20px 18px;
+    border-top: 1px solid var(--border-subtle);
+    background: var(--surface-1);
+  }
+
   .tabs {
     display: inline-grid;
     grid-auto-flow: column;

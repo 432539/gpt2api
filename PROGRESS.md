@@ -292,7 +292,62 @@ net start winnat
 - 真实 webhook 回调 + 写 `generation_result`（异步 worker，Sprint 10）
 - 管理后台：CDK 列表 + 导出 CSV（下一轮）
 - 管理后台：用户管理（封禁 / 加点 / 修改套餐，下一轮，需补后端 API）
-- 管理后台：充值消费 / 优惠码 / 系统配置 / 请求日志（下一轮，目前为占位页）
+- 管理后台：充值消费 / 优惠码 / 请求日志（下一轮，目前为占位页）
+
+---
+
+## Sprint 9.5 · 账号池高级能力（已完成）
+
+> 目标：把已写好的 `AccountTestService / OpenAIOAuthService / SystemConfigService / ProxyService` 接入 router，并在管理后台做完代理管理 + 系统配置两块拼图。
+
+### 后端
+
+- `router.MountAdmin` 装配补齐：
+  - `POST /admin/api/v1/accounts/:id/test`、`POST /accounts/:id/refresh`、`POST /accounts/batch-refresh`
+  - 整组 `proxies`：`GET / POST / PUT / DELETE / POST /:id/test`
+  - 整组 `system`：`GET /system/settings`、`PUT /system/settings`
+  - `accountAdmin.SetTestService(testSvc)` 回填，使 Test/Refresh 走得通
+- 复用既有服务（无新增逻辑）：
+  - `AccountTestService.Test`：GPT/GROK `GET /v1/models` 探活
+  - `AccountTestService.RefreshOAuth`：`auth.openai.com/oauth/token` refresh_token grant，写回 `access_token_enc / access_token_expires_at / last_refresh_at`
+  - `AccountTestService.maybeRefresh`：access_token 距过期阈值内自动刷新
+  - `AccountTestService.TestProxy`：通过代理探测 `https://www.google.com/generate_204` 测延迟
+  - `SystemConfigService`：30s 内存缓存 + 类型化便捷方法（`GlobalProxyEnabled / RefreshBeforeHours / OpenAIClientID / OpenAITokenURL`）
+
+### 后台前端
+
+- `lib/types`：补 `AccountItem` 上 OAuth/Test 字段；新增 `AccountTestResp / AccountRefreshResp / AccountBatchRefreshResp / ProxyItem / ProxyCreateBody / ProxyUpdateBody / ProxyTestResp / SystemSettings`
+- `lib/services`：补 `accountsApi.test / refresh / batchRefresh`；新增 `proxiesApi`、`systemApi`
+- **Token 管理页**升级：
+  - 顶栏新增「批量刷新 OAuth」按钮（按当前 provider 过滤）
+  - 表格新列「OAuth / 最近测试」：RT / AT 徽标 + access_token 倒计时 + last_test 状态/延迟/相对时间
+  - 操作列新增「测试连通」按钮（所有账号）+「刷新 access_token」按钮（仅 OAuth 账号）
+- **代理管理**新页（`/proxies`）：列表（启用/禁用 tabs + 关键字 + 分页）+ 新增/编辑 Dialog + 启停 + 删除 + 测试连通
+- **系统配置**新页（`/config`）替代占位页：
+  - 「全局代理」分区：开关 + 下拉选择已启用的代理
+  - 「OAuth 调度」分区：刷新窗口（小时）/ OpenAI client_id / Token Endpoint
+  - 「完整配置（只读）」JSON 视图便于诊断
+- 侧边栏新增「代理管理」入口
+
+### 验收
+
+- `go vet ./... && go build ./...` 全绿
+- `pnpm --filter @kleinai/admin typecheck` 全绿
+- 容器 `klein-admin-dev` 重建后 GIN 启动日志已注册全部新路由
+- `curl /admin/api/v1/{accounts,proxies,system/settings}` 返回 401（已挂中间件）
+
+### 9.5 修订（hotfix · 2026-04-27 晚）
+
+> 用户在管理后台试新增 / 批量导入账号时点出 5 个真实问题，本轮一并修齐：
+
+- **数据库 schema 漂移**：`migrations/20260427130011_init_proxy_oauth.sql` 中 `oauth_meta` 列 `AFTER` 与 `COMMENT` 顺序倒置，MySQL 8.0 拒绝执行；旧库（已建在 9.5 之前）的 mysql 容器 `docker-entrypoint-initdb.d` 不会重跑，导致 `account` 表缺 `proxy_id / oauth_meta / access_token_enc / refresh_token_enc / access_token_expires_at / last_refresh_at / last_test_*` 共 10 列 + 缺 5 条 `system_config` 默认值。已修正迁移并对运行中库手动补齐。
+- **批量导入 OAuth 行为不一致**：`AccountAdminService.BatchImport` 漏写 `refresh_token_enc`，与单条 `Create` 不同；现一并写入，使后续 `RefreshOAuth` 行为对齐。
+- **DTO 缺 `proxy_id`**：`AccountBatchImportReq` 加 `ProxyID *uint64`，让批量导入也能直接绑代理。
+- **新增账号 / 批量导入 UI 字段不全**：
+  - `CreateDialog` 增加：绑定代理下拉（取 `proxies.list status=1`）、`rpm_limit / tpm_limit / daily_quota / monthly_quota` 折叠区块、按 `auth_type` 切换的 placeholder + hint（API Key / Cookie / OAuth `refresh_token` 各自文案）
+  - `ImportDialog` 增加：默认绑定代理下拉、按 `auth_type` 切换的多行示例（API Key/Cookie/OAuth）
+  - `base_url` 字段统一经 `normalizeBaseURL()` 自动补 `https://`，规避后端 `binding:"omitempty,url"` 校验对 `api.openai.com` 这类裸域的 400
+- **端到端验证**：登录后 `POST /accounts`（OAuth + 限速字段）、`POST /accounts/import`（OAuth × 3 行）、`GET /accounts?keyword=e2e` 全部 200，`has_refresh_token=true` 在所有 OAuth 行上正确回传。
 
 ---
 
@@ -311,7 +366,6 @@ net start winnat
 | 用户管理        | 列表 / 封禁 / 加点 / 改套餐 API        | P1  | 后台前端已留位                         |
 | 充值订单        | 微信 / 支付宝 / Stripe 通道          | P1  | 现在只能 CDK                        |
 | 优惠码         | promo_code 表 + CRUD + 校验      | P2  | CDK 已通；优惠码用于折扣                  |
-| 系统配置        | system_config CRUD API        | P2  | 表已存在，缺 API                      |
 | 请求日志        | 持久化 + 后台查询 API                | P2  | 目前只有 access log 文件              |
 | 邀请返点        | 首充返点 + 终身分润落账                 | P2  | 表已建，逻辑未串                        |
 | 健康检查 worker | 自动探测账号池 + 解熔断                 | P2  | 现在只有手动                          |
@@ -326,7 +380,8 @@ net start winnat
 | 充值消费记录              | ⏳ 待对接            |
 | 优惠码                 | ⏳ 待对接            |
 | 兑换码 CDK 列表 + CSV 导出 | ⏳ 待对接（创建已通）      |
-| 系统配置                | ⏳ 待对接            |
+| 系统配置                | ✅ Sprint 9.5 已上线（代理 / OAuth / 完整 KV 视图） |
+| 代理管理                | ✅ Sprint 9.5 已上线（CRUD + 测试 + 全局开关） |
 | 请求日志                | ⏳ 待对接            |
 
 

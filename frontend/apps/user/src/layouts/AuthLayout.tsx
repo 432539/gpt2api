@@ -1,53 +1,35 @@
-import { Outlet } from 'react-router-dom';
+import { Link, Outlet } from 'react-router-dom';
+import { Image, MessageCircle, Video } from 'lucide-react';
+
 import { Logo } from '../components/Logo';
 
 export function AuthLayout() {
   return (
-    <div
-      className="
-        relative grid min-h-full
-        lg:grid-cols-[1.1fr_1fr]
-        bg-surface-bg
-      "
-    >
-      {/* 左侧：品牌叙事（移动端隐藏） */}
-      <aside className="relative hidden overflow-hidden lg:block">
-        <div className="absolute inset-0 bg-klein-gradient" />
-        <div className="absolute inset-0 opacity-20"
-             style={{
-               backgroundImage:
-                 'radial-gradient(circle at 20% 20%, rgba(255,255,255,.6) 0, transparent 50%), radial-gradient(circle at 80% 60%, rgba(255,255,255,.4) 0, transparent 55%)',
-             }}
-        />
-        <div className="relative z-10 flex h-full flex-col justify-between p-12 text-text-on-klein">
-          <Logo size="lg" />
-          <div className="space-y-6 max-w-lg">
-            <h1 className="text-display leading-tight">
-              一句话生图<br />一张图成片
-            </h1>
-            <p className="text-body opacity-85 leading-loose">
-              基于 GPT 与 GROK 双账号池的高并发 AIGC 平台，<br />
-              覆盖手机 / 平板 / 桌面 / 4K 大屏，全 OpenAI 协议兼容。
-            </p>
-            <ul className="space-y-3 text-body opacity-90">
-              <li>· 多模型并行调度，告别排队</li>
-              <li>· OpenAI 兼容协议，5 分钟接入</li>
-              <li>· 邀请返点 / 套餐 / CDK 灵活计费</li>
-            </ul>
-          </div>
-          <p className="text-small opacity-70">© gpt2api · 多终端响应式 AIGC 平台</p>
-        </div>
-      </aside>
+    <div className="min-h-full bg-white text-neutral-950">
+      <div className="mx-auto flex min-h-screen w-full max-w-6xl flex-col px-5 py-5">
+        <header className="flex items-center justify-between border-b border-neutral-100 pb-4">
+          <Link to="/create/image" className="inline-flex items-center gap-2 text-neutral-900">
+            <Logo size="sm" />
+          </Link>
+          <nav className="hidden items-center gap-2 rounded-full bg-neutral-100 p-1 text-sm text-neutral-500 sm:flex">
+            <Link className="inline-flex h-9 items-center gap-2 rounded-full bg-white px-4 text-neutral-950 shadow-sm" to="/create/image">
+              <Image size={15} /> 图片
+            </Link>
+            <Link className="inline-flex h-9 items-center gap-2 rounded-full px-4 hover:text-neutral-950" to="/create/text">
+              <MessageCircle size={15} /> 文字
+            </Link>
+            <Link className="inline-flex h-9 items-center gap-2 rounded-full px-4 hover:text-neutral-950" to="/create/video">
+              <Video size={15} /> 视频
+            </Link>
+          </nav>
+        </header>
 
-      {/* 右侧：表单插槽 */}
-      <main className="relative grid place-items-center px-4 py-10 sm:px-8">
-        <div className="w-full max-w-md klein-fade-in">
-          <div className="lg:hidden mb-8 flex justify-center">
-            <Logo size="lg" />
+        <main className="grid flex-1 place-items-center py-10">
+          <div className="w-full max-w-[440px] rounded-[28px] border border-neutral-200 bg-white p-6 shadow-[0_24px_80px_rgba(15,23,42,.08)]">
+            <Outlet />
           </div>
-          <Outlet />
-        </div>
-      </main>
+        </main>
+      </div>
     </div>
   );
 }

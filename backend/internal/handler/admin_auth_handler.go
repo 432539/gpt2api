@@ -67,3 +67,18 @@ func (h *AdminAuthHandler) Me(c *gin.Context) {
 		"role_name": roleName,
 	})
 }
+
+// ChangePassword POST /admin/api/v1/auth/password
+func (h *AdminAuthHandler) ChangePassword(c *gin.Context) {
+	uid := middleware.MustUID(c)
+	var req dto.ChangePasswordReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Fail(c, errcode.InvalidParam.Wrap(err))
+		return
+	}
+	if err := h.auth.ChangePassword(c.Request.Context(), uid, &req); err != nil {
+		response.Fail(c, err)
+		return
+	}
+	response.OK(c, gin.H{"ok": true})
+}

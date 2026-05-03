@@ -14,7 +14,7 @@ import '@kleinai/theme/tokens.css';
 import '@kleinai/theme/animations.css';
 import './index.css';
 
-applyThemeMode((localStorage.getItem('klein:theme') as 'dark' | 'light' | null) ?? 'dark');
+applyThemeMode((localStorage.getItem('klein:theme') as 'dark' | 'light' | 'system' | null) ?? 'light');
 
 setUnauthorizedHandler(() => {
   useAuthStore.setState({ token: null, me: null });

@@ -13,6 +13,8 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/kleinai/backend/internal/bootstrap"
+	"github.com/kleinai/backend/internal/repo"
+	"github.com/kleinai/backend/internal/service"
 	"github.com/kleinai/backend/pkg/logger"
 )
 
@@ -39,6 +41,12 @@ func main() {
 		logger.L().Fatal("worker requires redis")
 	}
 
+	if deps.DB != nil {
+		sysCfgSvc := service.NewSystemConfigService(repo.NewSystemConfigRepo(deps.DB))
+		proxySvc := service.NewProxyService(repo.NewProxyRepo(deps.DB), deps.AES)
+		service.NewGrokCFRefreshService(sysCfgSvc, proxySvc).Start(context.Background())
+	}
+
 	srv := asynq.NewServer(
 		asynq.RedisClientOpt{
 			Addr:     deps.Cfg.Redis.Addr,
@@ -52,8 +60,8 @@ func main() {
 				"default":  3,
 				"low":      1,
 			},
-			Logger:           &asynqZap{l: logger.L()},
-			ShutdownTimeout:  deps.Cfg.Server.ShutdownTimeout,
+			Logger:          &asynqZap{l: logger.L()},
+			ShutdownTimeout: deps.Cfg.Server.ShutdownTimeout,
 			HealthCheckFunc: func(err error) {
 				if err != nil {
 					logger.L().Warn("asynq health", zap.Error(err))

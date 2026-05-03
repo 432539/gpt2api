@@ -1,5 +1,7 @@
 import clsx from 'clsx';
 
+const LOGO_SRC = '/logo-icon.png?v=20260501';
+
 interface LogoProps {
   size?: 'sm' | 'md' | 'lg';
   /** 仅图标，不渲染文字 */
@@ -20,21 +22,17 @@ export function Logo({ size = 'md', iconOnly = false, suffix, className }: LogoP
   return (
     <div className={clsx('flex items-center gap-2 select-none min-w-0', className)}>
       <img
-        src="/logo-icon.png"
-        alt="gpt2api"
+        src={LOGO_SRC}
+        alt="首页"
         height={cfg.icon}
         style={{ height: cfg.icon, width: 'auto' }}
         draggable={false}
         className="block object-contain shrink-0"
       />
       {!iconOnly && (
-        <span className={clsx(cfg.text, 'font-bold tracking-tight text-text-primary leading-none')}>
-          gpt<span className="gradient-text">2api</span>
-          {suffix && (
-            <span className="ml-2 align-middle text-tiny font-semibold tracking-wider uppercase text-text-tertiary">
-              {suffix}
-            </span>
-          )}
+        <span className={clsx(cfg.text, 'font-medium tracking-tight text-text-primary leading-none')}>
+          首页
+          {suffix && <span className="ml-2 align-middle text-tiny font-medium text-text-tertiary">{suffix}</span>}
         </span>
       )}
     </div>

@@ -2,7 +2,9 @@
 package handler
 
 import (
+	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -97,18 +99,74 @@ func (h *AdminAccountHandler) Delete(c *gin.Context) {
 
 // BatchImport POST /admin/api/v1/accounts/import
 func (h *AdminAccountHandler) BatchImport(c *gin.Context) {
+	const maxSub2APIChunk = 500
 	var req dto.AccountBatchImportReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.Fail(c, errcode.InvalidParam.Wrap(err))
 		return
 	}
+	format := strings.ToLower(strings.TrimSpace(req.Format))
+	if format == "" {
+		if len(req.Accounts) > 0 {
+			format = "sub2api"
+		} else {
+			format = "lines"
+		}
+	}
+	req.Format = format
+	switch format {
+	case "sub2api":
+		if len(req.Accounts) == 0 {
+			response.Fail(c, errcode.InvalidParam.WithMsg("sub2api 导入需提供非空 accounts"))
+			return
+		}
+		if len(req.Accounts) > maxSub2APIChunk {
+			response.Fail(c, errcode.InvalidParam.WithMsg(fmt.Sprintf("单次最多导入 %d 条，请拆分多次请求", maxSub2APIChunk)))
+			return
+		}
+	case "lines":
+		// ok
+	default:
+		response.Fail(c, errcode.InvalidParam.WithMsg("format 仅支持 lines / sub2api"))
+		return
+	}
 	uid := middleware.UID(c)
-	n, err := h.svc.BatchImport(c.Request.Context(), uid, &req)
+	res, err := h.svc.BatchImport(c.Request.Context(), uid, &req)
 	if err != nil {
 		response.Fail(c, err)
 		return
 	}
-	response.OK(c, gin.H{"imported": n})
+	response.OK(c, res)
+}
+
+// BatchDelete POST /admin/api/v1/accounts/batch-delete
+func (h *AdminAccountHandler) BatchDelete(c *gin.Context) {
+	var req dto.AccountBatchDeleteReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Fail(c, errcode.InvalidParam.Wrap(err))
+		return
+	}
+	n, err := h.svc.BatchDeleteByIDs(c.Request.Context(), req.IDs)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	response.OK(c, dto.AccountBulkOpResult{Deleted: n})
+}
+
+// Purge POST /admin/api/v1/accounts/purge
+func (h *AdminAccountHandler) Purge(c *gin.Context) {
+	var req dto.AccountPurgeReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Fail(c, errcode.InvalidParam.Wrap(err))
+		return
+	}
+	n, err := h.svc.PurgeAccounts(c.Request.Context(), &req)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	response.OK(c, dto.AccountBulkOpResult{Deleted: n})
 }
 
 // PoolStats GET /admin/api/v1/accounts/stats
@@ -124,6 +182,23 @@ func (h *AdminAccountHandler) Test(c *gin.Context) {
 		return
 	}
 	res, err := h.svc.Test(c.Request.Context(), id)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	response.OK(c, res)
+}
+
+// Secrets GET /admin/api/v1/accounts/:id/secrets
+//
+// 仅管理员可见，返回单个账号的明文凭证（解密后），用于编辑面板回显。
+func (h *AdminAccountHandler) Secrets(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Fail(c, errcode.InvalidParam)
+		return
+	}
+	res, err := h.svc.GetSecrets(c.Request.Context(), id)
 	if err != nil {
 		response.Fail(c, err)
 		return
@@ -152,12 +227,29 @@ func (h *AdminAccountHandler) RefreshOAuth(c *gin.Context) {
 func (h *AdminAccountHandler) BatchRefresh(c *gin.Context) {
 	var body struct {
 		Provider string `json:"provider"`
+		Page     int    `json:"page"`
+		PageSize int    `json:"page_size"`
 	}
 	_ = c.ShouldBindJSON(&body)
-	ok, failed, err := h.svc.BatchRefreshOAuth(c.Request.Context(), body.Provider)
+	res, err := h.svc.BatchRefreshOAuth(c.Request.Context(), body.Provider, body.Page, body.PageSize)
 	if err != nil {
 		response.Fail(c, err)
 		return
 	}
-	response.OK(c, gin.H{"refreshed": ok, "failed_ids": failed})
+	response.OK(c, res)
+}
+
+func (h *AdminAccountHandler) BatchProbeQuota(c *gin.Context) {
+	var body struct {
+		Provider string `json:"provider"`
+		Page     int    `json:"page"`
+		PageSize int    `json:"page_size"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	res, err := h.svc.BatchProbeQuota(c.Request.Context(), body.Provider, body.Page, body.PageSize)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	response.OK(c, res)
 }

@@ -10,8 +10,7 @@ import { RequireAuth } from './routes/RequireAuth';
 
 const LoginPage = lazy(() => import('./pages/auth/LoginPage'));
 const RegisterPage = lazy(() => import('./pages/auth/RegisterPage'));
-const CreateImagePage = lazy(() => import('./pages/create/CreateImagePage'));
-const CreateVideoPage = lazy(() => import('./pages/create/CreateVideoPage'));
+const CreateStudioPage = lazy(() => import('./pages/create/CreateStudioPage'));
 const HistoryPage = lazy(() => import('./pages/create/HistoryPage'));
 const BillingPage = lazy(() => import('./pages/billing/BillingPage'));
 const KeysPage = lazy(() => import('./pages/keys/KeysPage'));
@@ -35,8 +34,9 @@ export default function App() {
           {/* 主应用：未登录也可浏览创作页 / 调用说明 */}
           <Route element={<AppLayout />}>
             <Route path="/" element={<Navigate to="/create/image" replace />} />
-            <Route path="/create/image" element={<CreateImagePage />} />
-            <Route path="/create/video" element={<CreateVideoPage />} />
+            <Route path="/create/image" element={<CreateStudioPage />} />
+            <Route path="/create/text" element={<CreateStudioPage />} />
+            <Route path="/create/video" element={<CreateStudioPage />} />
             <Route path="/docs" element={<DocsPage />} />
 
             {/* 受保护：未登录将弹浮层并退回首页 */}

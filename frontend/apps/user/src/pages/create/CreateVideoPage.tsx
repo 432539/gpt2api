@@ -16,7 +16,7 @@ const VIDEO_MODELS = [
   { code: 'vid-i2v', name: 'GROK 图生视频 V1', cost: 20 },
 ];
 
-const DURATIONS = [4, 8, 16] as const;
+const DURATIONS = [6, 10] as const;
 const RATIOS = ['16:9', '9:16', '1:1'] as const;
 const QUALITY = [
   { value: 'standard', label: '标准' },
@@ -31,7 +31,7 @@ export default function CreateVideoPage() {
   const ensureLoggedIn = useEnsureLoggedIn();
 
   const [model, setModel] = useState(VIDEO_MODELS[0]!.code);
-  const [duration, setDuration] = useState<(typeof DURATIONS)[number]>(8);
+  const [duration, setDuration] = useState<(typeof DURATIONS)[number]>(6);
   const [ratio, setRatio] = useState<(typeof RATIOS)[number]>('16:9');
   const [quality, setQuality] = useState<Quality>('hd');
   const [prompt, setPrompt] = useState('一只小猫穿过霓虹小巷，慢镜头，电影感');
@@ -79,7 +79,7 @@ export default function CreateVideoPage() {
   };
 
   const baseCost = VIDEO_MODELS.find((m) => m.code === model)?.cost ?? 15;
-  const expectedCost = duration > 4 ? Math.round((baseCost * duration) / 4) : baseCost;
+  const expectedCost = Math.round((baseCost * duration) / 6);
   const inProgress = task && (task.status === 0 || task.status === 1);
   const result = task?.results?.[0];
 

@@ -33,21 +33,30 @@ func MountAPI(r *gin.Engine, deps *bootstrap.Deps) {
 	walletRepo := repo.NewWalletRepo(deps.DB)
 	accountRepo := repo.NewAccountRepo(deps.DB)
 	genRepo := repo.NewGenerationRepo(deps.DB)
+	sysCfgRepo := repo.NewSystemConfigRepo(deps.DB)
+	proxyRepo := repo.NewProxyRepo(deps.DB)
 
 	authSvc := service.NewAuthService(deps.DB, userRepo, deps.JWT)
 	userSvc := service.NewUserService(userRepo)
 	keySvc := service.NewAPIKeyService(apiKeyRepo)
 	billingSvc := service.NewBillingService(deps.DB, walletRepo)
 	cdkSvc := service.NewCDKService(deps.DB, billingSvc)
+	sysCfgSvc := service.NewSystemConfigService(sysCfgRepo)
+	proxySvc := service.NewProxyService(proxyRepo, deps.AES)
 
 	pool := service.NewAccountPool(accountRepo, 30*time.Second)
 	providers := factory.Build()
-	genSvc := service.NewGenerationService(deps.DB, genRepo, pool, billingSvc, providers, service.DefaultPriceFn, deps.AES)
+	genSvc := service.NewGenerationService(deps.DB, genRepo, pool, billingSvc, providers, service.ConfigPriceFn(sysCfgSvc), deps.AES, proxySvc, sysCfgSvc)
+	chatSvc := service.NewChatService(deps.DB, genRepo, pool, billingSvc, sysCfgSvc, deps.AES, proxySvc)
 
 	authH := handler.NewAuthHandler(authSvc, userSvc)
 	keyH := handler.NewAPIKeyHandler(keySvc)
 	billH := handler.NewBillingHandler(billingSvc, cdkSvc)
-	genH := handler.NewGenerationHandler(genSvc, genRepo)
+	genH := handler.NewGenerationHandler(genSvc, chatSvc, genRepo, accountRepo, sysCfgSvc, deps.AES)
+
+	v1.GET("/models", genH.Models)
+	v1.GET("/gen/cached/*path", genH.CachedAsset)
+	v1.GET("/gen/assets/:task_id/:seq", genH.Asset)
 
 	auth := v1.Group("/auth")
 	{
@@ -85,9 +94,11 @@ func MountAPI(r *gin.Engine, deps *bootstrap.Deps) {
 		gen := authed.Group("/gen")
 		{
 			gen.POST("/image", genH.CreateImage)
+			gen.POST("/text", genH.CreateText)
 			gen.POST("/video", genH.CreateVideo)
 			gen.GET("/tasks/:task_id", genH.Get)
 			gen.GET("/history", genH.List)
+			gen.DELETE("/history", genH.DeleteHistory)
 		}
 	}
 }

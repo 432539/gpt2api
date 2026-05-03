@@ -5,13 +5,16 @@ import type {
   APIKeyCreateBody,
   APIKeyCreated,
   CreateImageBody,
+  CreateTextBody,
   CreateVideoBody,
   GenerationTask,
   LoginResp,
   MeResp,
   PageData,
+  PublicModel,
   RedeemCDKResp,
   RegisterResp,
+  TextGenerationResp,
   TokenPair,
   WalletLog,
 } from './types';
@@ -58,6 +61,18 @@ export const billingApi = {
 };
 
 export const genApi = {
+  models: async () => {
+    const r = await request<{ list: PublicModel[] } | PublicModel[] | null>({ method: 'GET', url: '/models' });
+    if (Array.isArray(r)) return r;
+    return r?.list ?? [];
+  },
+  createText: (body: CreateTextBody, idemKey?: string) =>
+    request<TextGenerationResp>({
+      method: 'POST',
+      url: '/gen/text',
+      data: body,
+      headers: idemKey ? { 'Idempotency-Key': idemKey } : undefined,
+    }),
   createImage: (body: CreateImageBody, idemKey?: string) =>
     request<GenerationTask>({
       method: 'POST',
@@ -74,7 +89,7 @@ export const genApi = {
     }),
   getTask: (taskId: string) =>
     request<GenerationTask>({ method: 'GET', url: `/gen/tasks/${taskId}` }),
-  history: (params: { kind?: 'image' | 'video'; page?: number; page_size?: number } = {}) =>
+  history: (params: { kind?: 'image' | 'video' | 'media'; page?: number; page_size?: number } = {}) =>
     request<PageData<GenerationTask>>({
       method: 'GET',
       url: '/gen/history',
@@ -84,4 +99,6 @@ export const genApi = {
         page_size: params.page_size ?? 20,
       },
     }),
+  deleteHistory: (scope: 'before_3d' | 'before_7d' | 'failed' | 'all') =>
+    request<{ deleted: number }>({ method: 'DELETE', url: '/gen/history', params: { scope } }),
 };

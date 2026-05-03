@@ -73,3 +73,19 @@ func (s *AdminAuthService) Login(ctx context.Context, req *dto.LoginReq, ip stri
 		RefreshExpireIn: int64(refExp.Sub(now).Seconds()),
 	}, nil
 }
+
+// ChangePassword updates the current admin user's password.
+func (s *AdminAuthService) ChangePassword(ctx context.Context, uid uint64, req *dto.ChangePasswordReq) error {
+	u, err := s.repo.GetByID(ctx, uid)
+	if err != nil {
+		return errcode.UserNotFound
+	}
+	if !crypto.VerifyPassword(u.Password, req.OldPassword) {
+		return errcode.Unauthorized.WithMsg("原密码不正确")
+	}
+	hash, err := crypto.HashPassword(req.NewPassword)
+	if err != nil {
+		return errcode.Internal.Wrap(err)
+	}
+	return s.repo.UpdatePassword(ctx, uid, hash)
+}

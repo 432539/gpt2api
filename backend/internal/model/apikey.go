@@ -15,7 +15,7 @@ type APIKey struct {
 	Hash       string     `gorm:"column:hash;size:64;not null;uniqueIndex" json:"-"`
 	Salt       string     `gorm:"column:salt;size:32;not null" json:"-"`
 	Last4      string     `gorm:"column:last4;size:4;not null" json:"last4"`
-	Scope      string     `gorm:"column:scope;size:255;not null;default:image,video" json:"scope"`
+	Scope      string     `gorm:"column:scope;size:255;not null;default:chat,image,video" json:"scope"`
 	RPMLimit   int        `gorm:"column:rpm_limit;not null;default:60" json:"rpm_limit"`
 	DailyQuota int        `gorm:"column:daily_quota;not null;default:0" json:"daily_quota"`
 	ExpireAt   *time.Time `gorm:"column:expire_at" json:"expire_at,omitempty"`

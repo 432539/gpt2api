@@ -61,7 +61,7 @@ export default function CDKPage() {
         </div>
       </header>
 
-      <form onSubmit={submit} className="card card-section grid lg:grid-cols-2 gap-5 max-w-4xl">
+      <form onSubmit={submit} className="card card-section grid w-full gap-5 lg:grid-cols-2">
         <Field label="批次号" hint="同批次唯一，如 SPRING2026-A">
           <input
             className="input"
@@ -134,7 +134,7 @@ export default function CDKPage() {
           />
         </Field>
 
-        <div className="lg:col-span-2 flex flex-wrap items-center justify-between gap-3 rounded-md bg-klein-gradient-soft p-4">
+        <div className="lg:col-span-2 flex flex-col items-stretch justify-between gap-3 rounded-md bg-klein-gradient-soft p-4 md:flex-row md:items-center">
           <div className="flex items-center gap-2 text-small text-text-secondary">
             <AlertCircle size={16} className="text-klein-500" />
             预计生成：
@@ -144,14 +144,14 @@ export default function CDKPage() {
             合计
             <strong className="text-klein-500 mx-1">{fmtPoints(body.points * body.qty)} 点</strong>
           </div>
-          <button type="submit" className="btn btn-primary btn-md" disabled={m.isPending}>
+          <button type="submit" className="btn btn-primary btn-md md:shrink-0" disabled={m.isPending}>
             {m.isPending ? '生成中…' : '生成批次'}
           </button>
         </div>
       </form>
 
       {last && (
-        <div className="card card-section flex items-start gap-3 border-success/40 max-w-4xl">
+        <div className="card card-section flex w-full items-start gap-3 border-success/40">
           <CheckCircle2 className="text-success shrink-0 mt-0.5" size={20} />
           <div className="flex-1 space-y-1">
             <p className="text-text-primary font-medium">最新生成成功</p>

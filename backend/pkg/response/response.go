@@ -3,6 +3,7 @@ package response
 
 import (
 	"net/http"
+	"os"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -17,6 +18,8 @@ type Body struct {
 	Msg     string `json:"msg"`
 	Data    any    `json:"data,omitempty"`
 	TraceID string `json:"trace_id,omitempty"`
+	// Detail 底层错误；仅 dev/local 或 KLEIN_API_ERROR_DETAIL=1 时填充。
+	Detail string `json:"detail,omitempty"`
 }
 
 // PageData 分页响应通用结构。
@@ -69,9 +72,16 @@ func Fail(c *gin.Context, err error) {
 		httpCode = be.HTTPStatus()
 	}
 
-	c.AbortWithStatusJSON(httpCode, Body{
+	body := Body{
 		Code:    be.Code,
 		Msg:     be.Msg,
 		TraceID: c.GetHeader(traceHeader),
-	})
+	}
+	if u := be.Unwrap(); u != nil {
+		env := os.Getenv("KLEIN_ENV")
+		if env == "dev" || env == "local" || os.Getenv("KLEIN_API_ERROR_DETAIL") == "1" {
+			body.Detail = u.Error()
+		}
+	}
+	c.AbortWithStatusJSON(httpCode, body)
 }

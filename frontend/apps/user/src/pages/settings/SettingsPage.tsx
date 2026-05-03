@@ -33,7 +33,7 @@ type PwdForm = z.infer<typeof pwdSchema>;
 export default function SettingsPage() {
   const me = useAuthStore((s) => s.me);
   const [mode, setLocalMode] = useState<ThemeMode>(
-    (localStorage.getItem('klein:theme') as ThemeMode | null) ?? 'dark',
+    (localStorage.getItem('klein:theme') as ThemeMode | null) ?? 'light',
   );
 
   const setTheme = (m: ThemeMode) => {
@@ -63,8 +63,8 @@ export default function SettingsPage() {
   });
 
   const themeOptions: { value: ThemeMode; label: string; desc: string }[] = [
-    { value: 'dark', label: '深色', desc: '创作专用 · 高对比' },
-    { value: 'light', label: '浅色', desc: '阅读 / 信息页' },
+    { value: 'light', label: '浅色', desc: '默认界面 · 简洁' },
+    { value: 'dark', label: '深色', desc: '高对比显示' },
     { value: 'system', label: '跟随系统', desc: '自动切换' },
   ];
 

@@ -1,9 +1,9 @@
 // Package service 账号池调度。
 //
 // 职责：
-//   1. 周期性从 DB 装载可用账号到内存（带 TTL 缓存）；
-//   2. 提供 Pick(provider) 返回当前应调度的账号（RoundRobin / WeightedRR）；
-//   3. 调度结果回写：MarkUsed / MarkFailed（含熔断冷却）。
+//  1. 周期性从 DB 装载可用账号到内存（带 TTL 缓存）；
+//  2. 提供 Pick(provider) 返回当前应调度的账号（RoundRobin / WeightedRR）；
+//  3. 调度结果回写：MarkUsed / MarkFailed（含熔断冷却）。
 //
 // 不在本组件内做：HTTP 调用 / 计费 / 任务编排。
 package service
@@ -24,10 +24,12 @@ import (
 
 // AccountPool 多 provider 共用一个池实例，内部按 provider 分桶。
 type AccountPool struct {
-	repo      *repo.AccountRepo
-	cacheTTL  time.Duration
-	mu        sync.RWMutex
-	buckets   map[string]*providerBucket // key: provider
+	repo     *repo.AccountRepo
+	cacheTTL time.Duration
+	mu       sync.RWMutex
+	buckets  map[string]*providerBucket // key: provider
+	busyMu   sync.Mutex
+	busy     map[uint64]struct{}
 }
 
 type providerBucket struct {
@@ -47,14 +49,42 @@ func NewAccountPool(r *repo.AccountRepo, cacheTTL time.Duration) *AccountPool {
 		repo:     r,
 		cacheTTL: cacheTTL,
 		buckets:  make(map[string]*providerBucket),
+		busy:     make(map[uint64]struct{}),
 	}
 }
 
 // Pick 取一个可用账号。strategy: round_robin / weighted_rr / random（默认 round_robin）。
 func (p *AccountPool) Pick(ctx context.Context, provider, strategy string) (*model.Account, error) {
+	return p.PickWhere(ctx, provider, strategy, nil)
+}
+
+// PickWhere 按 provider 取一个满足 predicate 的可用账号。
+func (p *AccountPool) PickWhere(ctx context.Context, provider, strategy string, predicate func(*model.Account) bool) (*model.Account, error) {
 	bucket, err := p.getBucket(ctx, provider)
 	if err != nil {
 		return nil, err
+	}
+	if len(bucket.items) == 0 {
+		return nil, errcode.NoAvailableAcc
+	}
+	if predicate != nil {
+		filtered := &providerBucket{loadedAt: bucket.loadedAt}
+		for _, it := range bucket.items {
+			if predicate(it) {
+				filtered.items = append(filtered.items, it)
+			}
+		}
+		for i, it := range filtered.items {
+			w := it.Weight
+			if w <= 0 {
+				w = 1
+			}
+			for j := 0; j < w; j++ {
+				filtered.weights = append(filtered.weights, w)
+				filtered.wIdx = append(filtered.wIdx, i)
+			}
+		}
+		bucket = filtered
 	}
 	if len(bucket.items) == 0 {
 		return nil, errcode.NoAvailableAcc
@@ -66,6 +96,55 @@ func (p *AccountPool) Pick(ctx context.Context, provider, strategy string) (*mod
 	default:
 		return p.pickRR(bucket), nil
 	}
+}
+
+// ReserveWhere 选取并占用一个账号，确保同一个账号不会被并发复用。
+func (p *AccountPool) ReserveWhere(ctx context.Context, provider, strategy string, predicate func(*model.Account) bool) (*model.Account, error) {
+	bucket, err := p.getBucket(ctx, provider)
+	if err != nil {
+		return nil, err
+	}
+	if len(bucket.items) == 0 {
+		return nil, errcode.NoAvailableAcc
+	}
+	if predicate != nil {
+		filtered := &providerBucket{loadedAt: bucket.loadedAt}
+		for _, it := range bucket.items {
+			if predicate(it) {
+				filtered.items = append(filtered.items, it)
+			}
+		}
+		for i, it := range filtered.items {
+			w := it.Weight
+			if w <= 0 {
+				w = 1
+			}
+			for j := 0; j < w; j++ {
+				filtered.weights = append(filtered.weights, w)
+				filtered.wIdx = append(filtered.wIdx, i)
+			}
+		}
+		bucket = filtered
+	}
+	if len(bucket.items) == 0 {
+		return nil, errcode.NoAvailableAcc
+	}
+	for i := 0; i < len(bucket.items); i++ {
+		var acc *model.Account
+		switch strategy {
+		case "weighted_rr":
+			acc = p.pickWeighted(bucket)
+		default:
+			acc = p.pickRR(bucket)
+		}
+		if acc == nil {
+			break
+		}
+		if p.tryReserve(acc.ID) {
+			return acc, nil
+		}
+	}
+	return nil, errcode.NoAvailableAcc
 }
 
 // MarkUsed 调度成功回写。
@@ -84,6 +163,29 @@ func (p *AccountPool) MarkFailed(ctx context.Context, accountID uint64, reason s
 		// 熔断后强制下一次取重新加载
 		p.invalidate(accountIDProvider(p, accountID))
 	}
+}
+
+// MarkTransientFailed records an upstream path failure without increasing
+// error_count or placing the account into cooldown.
+func (p *AccountPool) MarkTransientFailed(ctx context.Context, accountID uint64, reason string) {
+	if accountID == 0 {
+		return
+	}
+	if err := p.repo.Update(ctx, accountID, map[string]any{
+		"last_error": truncate(reason, 240),
+	}); err != nil {
+		logger.FromCtx(ctx).Warn("account.mark_transient_failed", zap.Uint64("id", accountID), zap.Error(err))
+	}
+}
+
+// Release 释放账号占用。
+func (p *AccountPool) Release(accountID uint64) {
+	if accountID == 0 {
+		return
+	}
+	p.busyMu.Lock()
+	delete(p.busy, accountID)
+	p.busyMu.Unlock()
 }
 
 // Reload 强制重新装载某 provider（管理后台 CRUD 后调用）。
@@ -155,6 +257,19 @@ func (p *AccountPool) pickWeighted(b *providerBucket) *model.Account {
 	return b.items[b.wIdx[idx]]
 }
 
+func (p *AccountPool) tryReserve(accountID uint64) bool {
+	if accountID == 0 {
+		return false
+	}
+	p.busyMu.Lock()
+	defer p.busyMu.Unlock()
+	if _, ok := p.busy[accountID]; ok {
+		return false
+	}
+	p.busy[accountID] = struct{}{}
+	return true
+}
+
 func (p *AccountPool) invalidate(provider string) {
 	if provider == "" {
 		return
@@ -180,8 +295,9 @@ func accountIDProvider(p *AccountPool, id uint64) string {
 }
 
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n]
+	return string(r[:n])
 }
