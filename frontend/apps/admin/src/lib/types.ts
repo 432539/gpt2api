@@ -405,6 +405,20 @@ export interface AccountBatchImportBody {
 export interface AccountBatchImportResult {
   imported: number;
   skipped: number;
+  detected?: number;
+  pending?: number;
+  failed?: number;
+}
+
+export interface AccountBatchAssignProxyBody {
+  mode: 'single' | 'cycle';
+  account_ids: number[];
+  proxy_id?: number;
+  proxy_ids?: number[];
+}
+
+export interface AccountBatchAssignProxyResp {
+  updated: number;
 }
 
 export interface PoolStatsResp {
@@ -476,6 +490,24 @@ export interface ProxyTestResp {
   error?: string;
 }
 
+export interface ProxyBatchImportBody {
+  text: string;
+}
+
+export interface ProxyBatchImportResult {
+  created: number;
+  skipped: number;
+  failed: number;
+  errors?: string[];
+}
+
+export interface ProxyBatchTestResp {
+  tested: number;
+  ok: number;
+  failed: number;
+  ids?: number[];
+}
+
 // ==================== 系统配置 ====================
 
 /** 已知 key（前端只列展示需要的，未列的也允许保存） */
@@ -484,6 +516,8 @@ export interface SystemSettings {
   'proxy.global_enabled'?: boolean;
   /** 全局代理 ID（0 表示不启用） */
   'proxy.global_id'?: number;
+  /** 全局代理选择模式 */
+  'proxy.selection_mode'?: 'fixed' | 'random' | string;
   /** OAuth access_token 距过期 N 小时内自动刷新 */
   'oauth.refresh_before_hours'?: number;
   /** OpenAI Codex CLI client_id */

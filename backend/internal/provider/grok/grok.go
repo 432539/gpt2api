@@ -149,6 +149,7 @@ func (p *Provider) Generate(ctx context.Context, req *provider.Request) (*provid
 	}
 	dur := normalizeVideoDuration(intParam(req.Params, "duration", 6))
 	aspect := strParam(req.Params, "aspect_ratio", "16:9")
+	quality := strParam(req.Params, "quality", "hd")
 
 	body := vidCreateReq{
 		Model:       req.ModelCode,
@@ -171,7 +172,7 @@ func (p *Provider) Generate(ctx context.Context, req *provider.Request) (*provid
 	if len(createResp.Data) > 0 {
 		return &provider.Result{
 			TaskID:  req.TaskID,
-			Assets:  toAssets(createResp.Data, dur),
+			Assets:  toAssets(createResp.Data, dur, aspect, quality),
 			Latency: time.Since(start),
 		}, nil
 	}
@@ -202,7 +203,7 @@ func (p *Provider) Generate(ctx context.Context, req *provider.Request) (*provid
 			}
 			return &provider.Result{
 				TaskID:  req.TaskID,
-				Assets:  toAssets(st.Data, dur),
+				Assets:  toAssets(st.Data, dur, aspect, quality),
 				Latency: time.Since(start),
 			}, nil
 		case "failed", "error", "cancelled":
@@ -252,8 +253,9 @@ func (p *Provider) do(ctx context.Context, method, url string, payload []byte, k
 	return &out, nil
 }
 
-func toAssets(items []vidAsset, durSec int) []provider.Asset {
+func toAssets(items []vidAsset, durSec int, aspect, quality string) []provider.Asset {
 	out := make([]provider.Asset, 0, len(items))
+	_, _, defaultWidth, defaultHeight := videoConfig("", aspect, quality)
 	for _, it := range items {
 		a := provider.Asset{
 			URL:        it.URL,
@@ -270,7 +272,7 @@ func toAssets(items []vidAsset, durSec int) []provider.Asset {
 			a.Mime = "video/mp4"
 		}
 		if a.Width == 0 || a.Height == 0 {
-			a.Width, a.Height = 1280, 720
+			a.Width, a.Height = defaultWidth, defaultHeight
 		}
 		out = append(out, a)
 	}

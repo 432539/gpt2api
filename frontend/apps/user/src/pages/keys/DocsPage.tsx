@@ -9,7 +9,7 @@ const OPENAI_BASE = (import.meta.env.VITE_OPENAI_BASE_URL as string | undefined)
 const EXAMPLE_BASE =
   typeof window !== 'undefined' && window.location?.origin
     ? `${window.location.origin.replace(/\/$/, '')}/v1`
-    : 'https://www.gpt2api.com/v1';
+    : 'https://api.example.com/v1';
 
 const TEXT_CHAT_SAMPLE = String.raw`curl ${EXAMPLE_BASE}/chat/completions \
   -H "Authorization: Bearer sk-xxx" \

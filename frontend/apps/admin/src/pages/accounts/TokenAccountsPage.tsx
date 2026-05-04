@@ -1,36 +1,111 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  Plus, Upload, RefreshCw, Trash2, Power, Activity, RotateCw, CheckCircle2, XCircle, Clock,
-  ChevronDown, ChevronUp, AlertCircle, Pencil,
-  ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight,
+  Activity,
+  AlertCircle,
+  CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
+  Pencil,
+  Plus,
+  Power,
+  RefreshCw,
+  RotateCw,
+  Trash2,
+  Upload,
+  XCircle,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 
 import { ApiError } from '../../lib/api';
 import { fmtNumber, fmtRelative, fmtTime, statusLabel } from '../../lib/format';
 import { accountsApi, proxiesApi } from '../../lib/services';
 import type {
+  AccountBatchAssignProxyBody,
   AccountBatchImportBody,
   AccountCreateBody,
   AccountItem,
-  AccountPurgeBody,
   AccountUpdateBody,
-  ProxyItem,
   Sub2APIAccountItem,
 } from '../../lib/types';
 import { toast } from '../../stores/toast';
 
-/** 把用户可能漏 scheme 的 host 自动补成 https://；空字符串保持空 */
-function normalizeBaseURL(s?: string): string | undefined {
-  const v = (s || '').trim();
-  if (!v) return undefined;
-  if (/^https?:\/\//i.test(v)) return v;
-  return `https://${v}`;
+type ProviderFilter = 'all' | 'gpt' | 'grok';
+type PlanTypeFilter = 'all' | 'basic' | 'super' | 'heavy';
+type AuthType = 'api_key' | 'oauth' | 'cookie';
+
+const PAGE_SIZE_OPTIONS = [10, 20, 50, 100, 200];
+
+const PLAN_TYPE_OPTIONS = [
+  { value: 'all', label: '全部类型' },
+  { value: 'basic', label: 'Basic' },
+  { value: 'super', label: 'Super' },
+  { value: 'heavy', label: 'Heavy' },
+] as const;
+
+function normalizeBaseURL(value?: string): string | undefined {
+  const trimmed = (value || '').trim();
+  if (!trimmed) return undefined;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
 }
 
-/** 默认 auth_type：GPT 走 OAuth (AT/RT/ST)；GROK 走 SSO Token。 */
-function defaultAuthType(provider: 'gpt' | 'grok'): 'api_key' | 'oauth' | 'cookie' {
+function defaultAuthType(provider: 'gpt' | 'grok'): AuthType {
   return provider === 'gpt' ? 'oauth' : 'cookie';
+}
+
+function planTypeLabel(planType?: string): string {
+  switch ((planType || '').toLowerCase()) {
+    case 'basic':
+      return 'Basic';
+    case 'super':
+      return 'Super';
+    case 'heavy':
+      return 'Heavy';
+    default:
+      return '未识别';
+  }
+}
+
+function planTypeClass(planType?: string): string {
+  switch ((planType || '').toLowerCase()) {
+    case 'basic':
+      return 'badge';
+    case 'super':
+      return 'badge badge-klein';
+    case 'heavy':
+      return 'badge badge-warning';
+    default:
+      return 'badge badge-outline';
+  }
+}
+
+function testLabel(status?: number): { label: string; cls: string; icon: typeof CheckCircle2 } {
+  switch (status) {
+    case 1:
+      return { label: 'OK', cls: 'text-success', icon: CheckCircle2 };
+    case 2:
+      return { label: 'FAIL', cls: 'text-danger', icon: XCircle };
+    default:
+      return { label: '未测', cls: 'text-text-tertiary', icon: Clock };
+  }
+}
+
+function expireState(expireAt?: number): { label: string; detail: string; cls: string } {
+  if (!expireAt) return { label: '未设置', detail: '未记录过期时间', cls: 'text-text-tertiary' };
+  const diff = expireAt - Date.now() / 1000;
+  if (diff <= 0) return { label: '已过期', detail: fmtTime(expireAt), cls: 'text-danger' };
+  if (diff < 3600) return { label: `${Math.max(1, Math.floor(diff / 60))} 分钟`, detail: fmtTime(expireAt), cls: 'text-warning' };
+  if (diff < 86400) return { label: `${Math.floor(diff / 3600)} 小时`, detail: fmtTime(expireAt), cls: 'text-warning' };
+  return { label: `${Math.floor(diff / 86400)} 天`, detail: fmtTime(expireAt), cls: 'text-text-secondary' };
+}
+
+function accountRowStatus(item: AccountItem): { label: string; tone: 'ok' | 'warn' | 'err' | 'mute' } {
+  const base = statusLabel(item.status);
+  if (item.status !== 1) return { label: base.label, tone: base.tone };
+  const hasError = !!(item.last_error || '').trim() || item.last_test_status === 2 || !!(item.last_test_error || '').trim();
+  return hasError ? { label: '异常', tone: 'err' } : { label: base.label, tone: base.tone };
 }
 
 const TONE_CLS: Record<'ok' | 'warn' | 'err' | 'mute', string> = {
@@ -40,59 +115,47 @@ const TONE_CLS: Record<'ok' | 'warn' | 'err' | 'mute', string> = {
   mute: 'badge',
 };
 
-function testLabel(s?: number): { label: string; cls: string; icon: typeof CheckCircle2 } {
-  switch (s) {
-    case 1: return { label: 'OK',   cls: 'text-success', icon: CheckCircle2 };
-    case 2: return { label: 'FAIL', cls: 'text-danger',  icon: XCircle };
-    default: return { label: '未测', cls: 'text-text-tertiary', icon: Clock };
+function parseSub2ExportJson(raw: string): Sub2APIAccountItem[] {
+  let data: unknown;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    throw new Error('文件不是合法 JSON');
   }
-}
-
-function expireState(expSec?: number): { label: string; detail: string; cls: string } {
-  if (!expSec) return { label: '未设置', detail: '未设置到期时间', cls: 'text-text-tertiary' };
-  const expIn = expSec - Date.now() / 1000;
-  if (expIn <= 0) return { label: '已过期', detail: fmtTime(expSec), cls: 'text-danger' };
-  if (expIn < 3600) return { label: `${Math.max(1, Math.floor(expIn / 60))} 分钟`, detail: fmtTime(expSec), cls: 'text-warning' };
-  if (expIn < 86400) return { label: `${Math.floor(expIn / 3600)} 小时`, detail: fmtTime(expSec), cls: 'text-warning' };
-  return { label: `${Math.floor(expIn / 86400)} 天`, detail: fmtTime(expSec), cls: 'text-text-secondary' };
-}
-
-/** 调度状态 + 最近错误/连通结果，用于列表「状态」列（避免启用仍显示「正常」）。 */
-function accountRowStatus(r: AccountItem): { label: string; tone: 'ok' | 'warn' | 'err' | 'mute' } {
-  const base = statusLabel(r.status);
-  if (r.status !== 1) {
-    return { label: base.label, tone: base.tone };
+  if (!data || typeof data !== 'object') {
+    throw new Error('JSON 根节点必须是对象');
   }
-  const le = (r.last_error || '').trim();
-  const te = (r.last_test_error || '').trim();
-  const testFail = r.last_test_status === 2;
-  if (le || testFail || te) {
-    return { label: '异常', tone: 'err' };
+  const accounts = (data as { accounts?: unknown }).accounts;
+  if (!Array.isArray(accounts)) {
+    throw new Error('导入文件必须包含 accounts 数组');
   }
-  return { label: base.label, tone: base.tone };
+  return accounts as Sub2APIAccountItem[];
 }
 
 export default function TokenAccountsPage() {
   const qc = useQueryClient();
 
-  const [provider, setProvider] = useState<'all' | 'gpt' | 'grok'>('all');
+  const [provider, setProvider] = useState<ProviderFilter>('all');
+  const [planType, setPlanType] = useState<PlanTypeFilter>('all');
   const [keyword, setKeyword] = useState('');
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState<number>(10);
-  const PAGE_SIZE_OPTIONS = [10, 20, 50, 100, 1000];
+  const [pageSize, setPageSize] = useState(20);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
 
   const [openCreate, setOpenCreate] = useState(false);
   const [openImport, setOpenImport] = useState(false);
+  const [openAssignProxy, setOpenAssignProxy] = useState(false);
   const [editTarget, setEditTarget] = useState<AccountItem | null>(null);
 
   const query = useMemo(
     () => ({
       provider: provider === 'all' ? undefined : provider,
-      keyword: keyword || undefined,
+      plan_type: planType === 'all' ? undefined : planType,
+      keyword: keyword.trim() || undefined,
       page,
       page_size: pageSize,
     }),
-    [provider, keyword, page, pageSize],
+    [provider, planType, keyword, page, pageSize],
   );
 
   const list = useQuery({
@@ -106,11 +169,10 @@ export default function TokenAccountsPage() {
   };
 
   const toggleStatus = useMutation({
-    mutationFn: ({ id, status }: { id: number; status: 0 | 1 }) =>
-      accountsApi.update(id, { status }),
+    mutationFn: ({ id, status }: { id: number; status: 0 | 1 }) => accountsApi.update(id, { status }),
     onSuccess: () => {
       refresh();
-      toast.success('已更新');
+      toast.success('状态已更新');
     },
     onError: (e: ApiError) => toast.error(e.message),
   });
@@ -119,105 +181,125 @@ export default function TokenAccountsPage() {
     mutationFn: (id: number) => accountsApi.remove(id),
     onSuccess: () => {
       refresh();
-      toast.success('已删除');
+      toast.success('账号已删除');
     },
     onError: (e: ApiError) => toast.error(e.message),
   });
 
   const testMut = useMutation({
     mutationFn: (id: number) => accountsApi.test(id),
-    onSuccess: (r) => {
+    onSuccess: (res) => {
       refresh();
-      if (r.ok) {
-        toast.success(`连通正常 · ${r.latency_ms}ms`);
-      } else {
-        toast.error(`不可用：${r.error || '未知错误'}`);
-      }
+      if (res.ok) toast.success(`连通性正常，延迟 ${res.latency_ms}ms`);
+      else toast.error(`测试失败：${res.error || '未知错误'}`);
     },
     onError: (e: ApiError) => toast.error(e.message),
   });
 
   const refreshOAuthMut = useMutation({
     mutationFn: (id: number) => accountsApi.refresh(id),
-    onSuccess: (r) => {
+    onSuccess: (res) => {
       refresh();
-      const ttl = r.expires_in ? `，有效期 ${Math.floor(r.expires_in / 3600)}h` : '';
-      toast.success(`已刷新 access_token${ttl}`);
+      const extra = res.expires_in ? `，有效期约 ${Math.floor(res.expires_in / 3600)}h` : '';
+      toast.success(`access_token 已刷新${extra}`);
     },
     onError: (e: ApiError) => toast.error(e.message),
   });
 
   const batchRefresh = useMutation({
-    mutationFn: async (p: 'gpt' | 'grok' | '') => {
-      let page = 1;
+    mutationFn: async (value: 'gpt' | 'grok' | '') => {
+      let current = 1;
       let refreshed = 0;
-      const failed_ids: number[] = [];
-      let total = 0;
-      const batchPageSize = Math.min(Math.max(pageSize, 1), 1000);
+      const failedIDs: number[] = [];
+      const batchSize = Math.min(Math.max(pageSize, 1), 1000);
       for (;;) {
-        const r = await accountsApi.batchRefresh(p || undefined, page, batchPageSize);
-        refreshed += r.refreshed;
-        failed_ids.push(...r.failed_ids);
-        total = r.total || total;
-        if (r.has_more && r.next_page) {
-          page = r.next_page;
-          continue;
-        }
-        if (total > 0 && page * batchPageSize < total) {
-          page += 1;
+        const res = await accountsApi.batchRefresh(value || undefined, current, batchSize);
+        refreshed += res.refreshed;
+        failedIDs.push(...res.failed_ids);
+        if (res.has_more && res.next_page) {
+          current = res.next_page;
           continue;
         }
         break;
       }
-      return { refreshed, failed_ids };
+      return { refreshed, failedIDs };
     },
-    onSuccess: (r) => {
+    onSuccess: (res) => {
       refresh();
-      toast.success(`已刷新 ${r.refreshed} 个 OAuth 账号${r.failed_ids.length ? `，失败 ${r.failed_ids.length}` : ''}`);
+      toast.success(`已刷新 ${res.refreshed} 个 OAuth 账号${res.failedIDs.length ? `，失败 ${res.failedIDs.length} 个` : ''}`);
     },
     onError: (e: ApiError) => toast.error(e.message),
   });
 
   const batchProbe = useMutation({
-    mutationFn: async (p: 'gpt' | 'grok' | '') => {
-      let page = 1;
+    mutationFn: async (value: 'gpt' | 'grok' | '') => {
+      let current = 1;
       let probed = 0;
-      const failed_ids: number[] = [];
-      const batchPageSize = Math.min(Math.max(pageSize, 1), 1000);
-      let total = 0;
+      const failedIDs: number[] = [];
+      const batchSize = Math.min(Math.max(pageSize, 1), 1000);
       for (;;) {
-        const r = await accountsApi.batchProbe(p || undefined, page, batchPageSize);
-        probed += r.probed;
-        failed_ids.push(...r.failed_ids);
-        total = r.total || total;
-        if (r.has_more && r.next_page) {
-          page = r.next_page;
-          continue;
-        }
-        if (total > 0 && page * batchPageSize < total) {
-          page += 1;
+        const res = await accountsApi.batchProbe(value || undefined, current, batchSize);
+        probed += res.probed;
+        failedIDs.push(...res.failed_ids);
+        if (res.has_more && res.next_page) {
+          current = res.next_page;
           continue;
         }
         break;
       }
-      return { probed, failed_ids };
+      return { probed, failedIDs };
     },
-    onSuccess: (r) => {
+    onSuccess: (res) => {
       refresh();
-      toast.success(`已检测 ${r.probed} 个账号用量${r.failed_ids.length ? `，失败 ${r.failed_ids.length} 个` : ''}`);
+      toast.success(`已检测 ${res.probed} 个账号${res.failedIDs.length ? `，失败 ${res.failedIDs.length} 个` : ''}`);
     },
     onError: (e: ApiError) => toast.error(e.message),
   });
 
-  const total = list.data?.total ?? 0;
-  const items: AccountItem[] = list.data?.list ?? [];
-  const lastPage = Math.max(1, Math.ceil(total / pageSize));
+  const batchDelete = useMutation({
+    mutationFn: (ids: number[]) => accountsApi.batchDelete(ids),
+    onSuccess: (res) => {
+      refresh();
+      setSelected(new Set());
+      toast.success(`已删除 ${res.deleted} 个账号`);
+    },
+    onError: (e: ApiError) => toast.error(e.message),
+  });
 
-  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const batchAssignProxy = useMutation({
+    mutationFn: (body: AccountBatchAssignProxyBody) => accountsApi.batchAssignProxy(body),
+    onSuccess: (res) => {
+      refresh();
+      setSelected(new Set());
+      setOpenAssignProxy(false);
+      toast.success(`已更新 ${res.updated} 个 Token 的代理`);
+    },
+    onError: (e: ApiError) => toast.error(e.message),
+  });
+
+  const items = list.data?.list ?? [];
+  const total = list.data?.total ?? 0;
+  const lastPage = Math.max(1, Math.ceil(total / pageSize));
+  const pageIDs = items.map((item) => item.id);
+  const pageAllSelected = pageIDs.length > 0 && pageIDs.every((id) => selected.has(id));
+  const headerCbRef = useRef<HTMLInputElement | null>(null);
+
+  const selectedAccountIDs = useMemo(() => {
+    const visible = items.filter((item) => selected.has(item.id)).map((item) => item.id);
+    const visibleSet = new Set(visible);
+    return [...visible, ...[...selected].filter((id) => !visibleSet.has(id))];
+  }, [items, selected]);
+
+  useEffect(() => {
+    const el = headerCbRef.current;
+    if (!el) return;
+    const some = pageIDs.some((id) => selected.has(id));
+    el.indeterminate = some && !pageAllSelected;
+  }, [pageIDs, pageAllSelected, selected]);
 
   useEffect(() => {
     setSelected(new Set());
-  }, [provider, keyword]);
+  }, [provider, planType, keyword]);
 
   const toggleSelect = (id: number) => {
     setSelected((prev) => {
@@ -229,228 +311,114 @@ export default function TokenAccountsPage() {
   };
 
   const toggleSelectPage = () => {
-    const pageIds = items.map((r) => r.id);
-    const allOn = pageIds.length > 0 && pageIds.every((id) => selected.has(id));
     setSelected((prev) => {
       const next = new Set(prev);
-      if (allOn) {
-        pageIds.forEach((id) => next.delete(id));
-      } else {
-        pageIds.forEach((id) => next.add(id));
-      }
+      if (pageAllSelected) pageIDs.forEach((id) => next.delete(id));
+      else pageIDs.forEach((id) => next.add(id));
       return next;
     });
   };
-
-  const batchDeleteMut = useMutation({
-    mutationFn: (ids: number[]) => accountsApi.batchDelete(ids),
-    onSuccess: (r) => {
-      refresh();
-      setSelected(new Set());
-      toast.success(`已删除 ${r.deleted} 条`);
-    },
-    onError: (e: ApiError) => toast.error(e.message),
-  });
-
-  const purgeMut = useMutation({
-    mutationFn: (b: AccountPurgeBody) => accountsApi.purge(b),
-    onSuccess: (r) => {
-      refresh();
-      setSelected(new Set());
-      toast.success(`已清理 ${r.deleted} 条`);
-    },
-    onError: (e: ApiError) => toast.error(e.message),
-  });
-
-  const purgeProvider = provider === 'all' ? undefined : provider;
-
-  const pageIds = items.map((r) => r.id);
-  const pageAllSelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id));
-  const headerCbRef = useRef<HTMLInputElement | null>(null);
-  const [bulkOpen, setBulkOpen] = useState(false);
-  const [purgeAllOpen, setPurgeAllOpen] = useState(false);
-  const bulkWrapRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!bulkOpen) return;
-    const onDocClick = (e: MouseEvent) => {
-      if (!bulkWrapRef.current) return;
-      if (!bulkWrapRef.current.contains(e.target as Node)) setBulkOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setBulkOpen(false);
-    };
-    document.addEventListener('mousedown', onDocClick);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDocClick);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [bulkOpen]);
-
-  useEffect(() => {
-    const el = headerCbRef.current;
-    if (!el) return;
-    const some = pageIds.some((id) => selected.has(id));
-    el.indeterminate = some && !pageAllSelected;
-  }, [pageIds, selected, pageAllSelected]);
 
   return (
     <div className="page page-wide space-y-4">
       <header className="page-header">
         <div>
           <h1 className="page-title">Token 管理</h1>
-          <p className="page-subtitle">GPT / GROK 账号池</p>
+          <p className="page-subtitle">统一管理 GPT / GROK 账号、额度、账户类型和代理绑定。</p>
         </div>
-        <div className="flex flex-wrap items-center gap-1.5">
-          <button className="btn btn-outline btn-sm" onClick={refresh} title="刷新列表">
+        <div className="flex flex-wrap items-center gap-2">
+          <button className="btn btn-outline btn-sm" onClick={refresh}>
             <RefreshCw size={14} /> 刷新
           </button>
           <button
             className="btn btn-outline btn-sm"
             onClick={() => batchRefresh.mutate(provider === 'all' ? '' : provider)}
             disabled={batchRefresh.isPending}
-            title="按当前 Tab 批量刷新 OAuth"
           >
             <RotateCw size={14} className={batchRefresh.isPending ? 'animate-spin' : ''} />
-            {batchRefresh.isPending ? '刷新中…' : '批量刷新OAuth'}
+            批量刷新 OAuth
           </button>
           <button
             className="btn btn-outline btn-sm"
             onClick={() => batchProbe.mutate(provider === 'all' ? '' : provider)}
             disabled={batchProbe.isPending}
-            title="按当前 Tab 批量检测账号用量/额度"
           >
             <Activity size={14} className={batchProbe.isPending ? 'animate-pulse' : ''} />
-            {batchProbe.isPending ? '检测中…' : '批量检测用量'}
+            批量检测用量
           </button>
           <button className="btn btn-outline btn-sm" onClick={() => setOpenImport(true)}>
             <Upload size={14} /> 导入
           </button>
-          <div ref={bulkWrapRef} className="relative">
-            <button
-              type="button"
-              className="btn btn-outline btn-sm gap-1"
-              disabled={batchDeleteMut.isPending || purgeMut.isPending}
-              aria-haspopup="menu"
-              aria-expanded={bulkOpen}
-              onClick={() => setBulkOpen((v) => !v)}
-            >
-              <Trash2 size={14} />
-              删除
-              <ChevronDown
-                size={14}
-                className={`opacity-60 transition-transform ${bulkOpen ? 'rotate-180' : ''}`}
-              />
-            </button>
-            {bulkOpen && (
-              <div
-                role="menu"
-                className="card card-elevated absolute right-0 mt-2 z-[90] w-[18rem] overflow-hidden p-1.5 shadow-xl klein-fade-in"
-              >
-                <div className="px-2.5 py-2">
-                  <div className="text-small font-semibold text-text-primary">批量删除</div>
-                  <div className="text-tiny text-text-tertiary mt-0.5">
-                    作用范围：{provider === 'all' ? '全部账号' : provider.toUpperCase()}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="btn btn-ghost btn-sm w-full justify-between gap-2"
-                  disabled={selected.size === 0 || batchDeleteMut.isPending}
-                  onClick={() => {
-                    setBulkOpen(false);
-                    if (selected.size === 0) return;
-                    if (!confirm(`软删除选中的 ${selected.size} 条？`)) return;
-                    batchDeleteMut.mutate([...selected]);
-                  }}
-                >
-                  <span className="inline-flex items-center gap-2">
-                    <CheckCircle2 size={14} className="text-text-secondary" />
-                    删除选中
-                  </span>
-                  <span className="badge badge-outline">{selected.size}</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="btn btn-ghost btn-sm w-full justify-start gap-2"
-                  disabled={purgeMut.isPending}
-                  onClick={() => {
-                    setBulkOpen(false);
-                    if (!confirm('删除禁用、熔断或测试失败的账号？')) return;
-                    purgeMut.mutate({ scope: 'invalid', provider: purgeProvider });
-                  }}
-                >
-                  <XCircle size={14} className="text-danger" />
-                  删除错误
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="btn btn-ghost btn-sm w-full justify-start gap-2"
-                  disabled={purgeMut.isPending}
-                  onClick={() => {
-                    setBulkOpen(false);
-                    if (!confirm('删除已检测且剩余额度为 0 的账号？未检测账号不会被删除。')) return;
-                    purgeMut.mutate({ scope: 'zero_quota', provider: purgeProvider });
-                  }}
-                >
-                  <AlertCircle size={14} className="text-warning" />
-                  删除0额度
-                </button>
-                <div className="my-1 h-px bg-border" />
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="btn btn-danger-ghost btn-sm w-full justify-start gap-2"
-                  disabled={purgeMut.isPending}
-                  onClick={() => {
-                    setBulkOpen(false);
-                    setPurgeAllOpen(true);
-                  }}
-                >
-                  <Trash2 size={14} />
-                  删除全部
-                </button>
-              </div>
-            )}
-          </div>
+          <button
+            className="btn btn-outline btn-sm"
+            disabled={selected.size === 0 || batchAssignProxy.isPending}
+            onClick={() => setOpenAssignProxy(true)}
+          >
+            <ChevronDown size={14} /> 批量代理
+          </button>
+          <button
+            className="btn btn-danger btn-sm"
+            disabled={selected.size === 0 || batchDelete.isPending}
+            onClick={() => {
+              if (!confirm(`确认删除选中的 ${selected.size} 个账号吗？`)) return;
+              batchDelete.mutate([...selected]);
+            }}
+          >
+            <Trash2 size={14} /> 批量删除
+          </button>
           <button className="btn btn-primary btn-sm" onClick={() => setOpenCreate(true)}>
             <Plus size={16} /> 新增
           </button>
         </div>
       </header>
 
-      {/* 筛选 */}
       <div className="card card-section flex flex-wrap items-center gap-2 !py-2">
         <div className="tabs">
-          {(['all', 'gpt', 'grok'] as const).map((p) => (
+          {(['all', 'gpt', 'grok'] as const).map((item) => (
             <button
-              key={p}
+              key={item}
               type="button"
               className="tab"
-              aria-selected={provider === p}
-              onClick={() => { setProvider(p); setPage(1); }}
+              aria-selected={provider === item}
+              onClick={() => {
+                setProvider(item);
+                setPage(1);
+              }}
             >
-              {p === 'all' ? '全部' : p.toUpperCase()}
+              {item === 'all' ? '全部' : item.toUpperCase()}
             </button>
           ))}
         </div>
         <input
-          className="input input-sm flex-1 min-w-[160px]"
-          placeholder="名称 / 备注"
+          className="input input-sm min-w-[180px] flex-1"
+          placeholder="搜索名称或备注"
           value={keyword}
-          onChange={(e) => { setKeyword(e.target.value); setPage(1); }}
+          onChange={(e) => {
+            setKeyword(e.target.value);
+            setPage(1);
+          }}
         />
-        <span className="text-tiny text-text-tertiary whitespace-nowrap">
-          共 <span className="text-text-secondary tabular-nums font-medium">{fmtNumber(total)}</span> 条
+        <select
+          className="select select-sm min-w-[132px]"
+          value={planType}
+          onChange={(e) => {
+            setPlanType(e.target.value as PlanTypeFilter);
+            setPage(1);
+          }}
+        >
+          {PLAN_TYPE_OPTIONS.map((item) => (
+            <option key={item.value} value={item.value}>
+              {item.label}
+            </option>
+          ))}
+        </select>
+        <span className="whitespace-nowrap text-tiny text-text-tertiary">
+          共 <span className="font-medium tabular-nums text-text-secondary">{fmtNumber(total)}</span> 条
         </span>
       </div>
 
-      {/* 表格 */}
       <div className="card overflow-x-auto">
-        <table className="data-table min-w-[1180px]">
+        <table className="data-table min-w-[1280px]">
           <thead>
             <tr>
               <th className="w-10">
@@ -461,11 +429,11 @@ export default function TokenAccountsPage() {
                   checked={pageAllSelected}
                   onChange={toggleSelectPage}
                   disabled={list.isLoading || items.length === 0}
-                  title="全选当前页"
                 />
               </th>
               <th>名称</th>
               <th>Provider</th>
+              <th>账户类型</th>
               <th>状态</th>
               <th>凭证 / 最近测试</th>
               <th>用量</th>
@@ -476,57 +444,56 @@ export default function TokenAccountsPage() {
           <tbody>
             {list.isLoading && (
               <tr>
-                <td colSpan={8} className="text-center text-text-tertiary text-small py-10">加载中…</td>
+                <td colSpan={9} className="py-10 text-center text-small text-text-tertiary">
+                  加载中…
+                </td>
               </tr>
             )}
             {!list.isLoading && items.length === 0 && (
               <tr>
-                <td colSpan={8}>
+                <td colSpan={9}>
                   <div className="empty-state">
                     <p className="empty-state-title">暂无账号</p>
-                    <p className="empty-state-desc">点击右上角【新增账号】或【批量导入】开始。</p>
+                    <p className="empty-state-desc">点击右上角“新增”或“导入”开始添加账号。</p>
                   </div>
                 </td>
               </tr>
             )}
-            {items.map((r) => {
-              const s = accountRowStatus(r);
-              const enabled = r.status === 1;
-              const isOAuth = r.auth_type === 'oauth';
-              const t = testLabel(r.last_test_status);
-              const TestIcon = t.icon;
-              const exp = expireState(r.access_token_expire_at);
-              const lastErr = (r.last_error || '').trim();
-              const testErr = (r.last_test_error || '').trim();
-              const statusErrTip = [lastErr, testErr].filter(Boolean).join('\n\n');
-              const atNeedsAttention =
-                isOAuth && (!r.has_access_token || r.last_test_status === 2 || !!testErr);
+            {items.map((item) => {
+              const rowStatus = accountRowStatus(item);
+              const enabled = item.status === 1;
+              const isOAuth = item.auth_type === 'oauth';
+              const check = testLabel(item.last_test_status);
+              const CheckIcon = check.icon;
+              const expire = expireState(item.access_token_expire_at);
+              const lastError = (item.last_error || '').trim();
+              const testError = (item.last_test_error || '').trim();
+              const statusErrorText = [lastError, testError].filter(Boolean).join('\n\n');
+              const needsAttention = isOAuth && (!item.has_access_token || item.last_test_status === 2 || !!testError);
+
               return (
-                <tr key={r.id}>
+                <tr key={item.id}>
                   <td className="w-10">
                     <input
                       type="checkbox"
                       className="rounded border-border"
-                      checked={selected.has(r.id)}
-                      onChange={() => toggleSelect(r.id)}
-                      aria-label={`选择 ${r.name}`}
+                      checked={selected.has(item.id)}
+                      onChange={() => toggleSelect(item.id)}
+                      aria-label={`选择 ${item.name}`}
                     />
                   </td>
                   <td className="font-medium text-text-primary">
-                    {r.name}
-                    {r.remark && (
-                      <span className="block text-small text-text-tertiary mt-0.5">{r.remark}</span>
-                    )}
+                    {item.name}
+                    {item.remark && <span className="mt-0.5 block text-small text-text-tertiary">{item.remark}</span>}
                   </td>
-                  <td className="uppercase text-klein-500 font-semibold">{r.provider}</td>
+                  <td className="font-semibold uppercase text-klein-500">{item.provider}</td>
                   <td className="whitespace-nowrap">
-                    <span className={TONE_CLS[s.tone]}>{s.label}</span>
-                    {!!statusErrTip && (
-                      <span
-                        className="inline-flex align-middle ml-1 text-danger"
-                        title={statusErrTip}
-                        aria-label={statusErrTip}
-                      >
+                    <span className={planTypeClass(item.plan_type)}>{planTypeLabel(item.plan_type)}</span>
+                  </td>
+                  <td className="whitespace-nowrap">
+                    <span className={TONE_CLS[rowStatus.tone]}>{rowStatus.label}</span>
+                    {!!statusErrorText && (
+                      <span className="ml-1 inline-flex align-middle text-danger" title={statusErrorText}>
                         <AlertCircle size={14} strokeWidth={2} />
                       </span>
                     )}
@@ -534,58 +501,38 @@ export default function TokenAccountsPage() {
                   <td className="text-small">
                     {isOAuth ? (
                       <div className="flex flex-col gap-1">
-                        <div className="inline-flex gap-1 items-center">
-                          <span
-                            className={`badge text-tiny ${r.has_refresh_token ? 'badge-success' : 'badge-warning'}`}
-                            title="refresh_token 是否已存"
-                          >
-                            RT {r.has_refresh_token ? '✓' : '✗'}
+                        <div className="inline-flex items-center gap-1">
+                          <span className={`badge text-tiny ${item.has_refresh_token ? 'badge-success' : 'badge-warning'}`}>
+                            RT {item.has_refresh_token ? '已存' : '缺失'}
                           </span>
-                          <span
-                            className={`badge text-tiny ${
-                              r.has_access_token ? 'badge-success' : atNeedsAttention ? 'badge-warning' : ''
-                            }`}
-                            title="access_token 是否已取得"
-                          >
-                            AT {r.has_access_token ? '✓' : '∅'}
+                          <span className={`badge text-tiny ${item.has_access_token ? 'badge-success' : needsAttention ? 'badge-warning' : 'badge-outline'}`}>
+                            AT {item.has_access_token ? '已取到' : '缺失'}
                           </span>
                         </div>
-                        <div className={`inline-flex items-center gap-1 flex-wrap ${t.cls}`}>
-                          <TestIcon size={12} />
+                        <div className={`inline-flex flex-wrap items-center gap-1 ${check.cls}`}>
+                          <CheckIcon size={12} />
                           <span className="text-tiny">
-                            {t.label}
-                            {r.last_test_latency_ms ? ` · ${r.last_test_latency_ms}ms` : ''}
+                            {check.label}
+                            {item.last_test_latency_ms ? ` / ${item.last_test_latency_ms}ms` : ''}
                           </span>
-                          {r.last_test_at && (
-                            <span className="text-tiny text-text-tertiary">{fmtRelative(r.last_test_at)}</span>
-                          )}
-                          {testErr && (
-                            <span
-                              className="inline-flex text-danger"
-                              title={r.last_test_error}
-                              aria-label={r.last_test_error}
-                            >
+                          {item.last_test_at && <span className="text-tiny text-text-tertiary">{fmtRelative(item.last_test_at)}</span>}
+                          {testError && (
+                            <span className="inline-flex text-danger" title={item.last_test_error}>
                               <AlertCircle size={12} strokeWidth={2} />
                             </span>
                           )}
                         </div>
                       </div>
                     ) : (
-                      <div className={`inline-flex items-center gap-1 flex-wrap ${t.cls}`}>
-                        <TestIcon size={12} />
+                      <div className={`inline-flex flex-wrap items-center gap-1 ${check.cls}`}>
+                        <CheckIcon size={12} />
                         <span className="text-tiny">
-                          {t.label}
-                          {r.last_test_latency_ms ? ` · ${r.last_test_latency_ms}ms` : ''}
+                          {check.label}
+                          {item.last_test_latency_ms ? ` / ${item.last_test_latency_ms}ms` : ''}
                         </span>
-                        {r.last_test_at && (
-                          <span className="text-tiny text-text-tertiary">{fmtRelative(r.last_test_at)}</span>
-                        )}
-                        {testErr && (
-                          <span
-                            className="inline-flex text-danger"
-                            title={r.last_test_error}
-                            aria-label={r.last_test_error}
-                          >
+                        {item.last_test_at && <span className="text-tiny text-text-tertiary">{fmtRelative(item.last_test_at)}</span>}
+                        {testError && (
+                          <span className="inline-flex text-danger" title={item.last_test_error}>
                             <AlertCircle size={12} strokeWidth={2} />
                           </span>
                         )}
@@ -593,67 +540,55 @@ export default function TokenAccountsPage() {
                     )}
                   </td>
                   <td className="text-small">
-                    {r.image_quota_total ? (
+                    {item.image_quota_total ? (
                       <span className="text-text-primary">
-                        已用 {fmtNumber(Math.max(0, r.image_quota_total - (r.image_quota_remaining ?? 0)))} / {fmtNumber(r.image_quota_total)}
+                        已用 {fmtNumber(Math.max(0, item.image_quota_total - (item.image_quota_remaining ?? 0)))} / {fmtNumber(item.image_quota_total)}
                       </span>
-                    ) : typeof r.image_quota_remaining === 'number' ? (
-                      <span className="text-text-secondary">剩余 {fmtNumber(r.image_quota_remaining)} / 总额未知</span>
+                    ) : typeof item.image_quota_remaining === 'number' ? (
+                      <span className="text-text-secondary">剩余 {fmtNumber(item.image_quota_remaining)} / 总额未知</span>
                     ) : (
                       <span className="text-text-tertiary">未检测</span>
                     )}
                   </td>
                   <td className="text-small">
                     <div className="flex flex-col">
-                      <span className={exp.cls}>{exp.label}</span>
-                      <span className="text-tiny text-text-tertiary">{exp.detail}</span>
+                      <span className={expire.cls}>{expire.label}</span>
+                      <span className="text-tiny text-text-tertiary">{expire.detail}</span>
                     </div>
                   </td>
                   <td>
                     <div className="inline-flex gap-1">
                       <button
                         className="btn btn-ghost btn-icon btn-sm"
-                        title="测试连通"
-                        onClick={() => testMut.mutate(r.id)}
-                        disabled={testMut.isPending && testMut.variables === r.id}
+                        title="测试连通性"
+                        onClick={() => testMut.mutate(item.id)}
+                        disabled={testMut.isPending && testMut.variables === item.id}
                       >
                         <Activity
                           size={14}
-                          className={
-                            testMut.isPending && testMut.variables === r.id
-                              ? 'animate-pulse text-klein-500'
-                              : 'text-text-secondary'
-                          }
+                          className={testMut.isPending && testMut.variables === item.id ? 'animate-pulse text-klein-500' : 'text-text-secondary'}
                         />
                       </button>
                       {isOAuth && (
                         <button
                           className="btn btn-ghost btn-icon btn-sm"
                           title="刷新 access_token"
-                          onClick={() => refreshOAuthMut.mutate(r.id)}
-                          disabled={refreshOAuthMut.isPending && refreshOAuthMut.variables === r.id}
+                          onClick={() => refreshOAuthMut.mutate(item.id)}
+                          disabled={refreshOAuthMut.isPending && refreshOAuthMut.variables === item.id}
                         >
                           <RotateCw
                             size={14}
-                            className={
-                              refreshOAuthMut.isPending && refreshOAuthMut.variables === r.id
-                                ? 'animate-spin text-klein-500'
-                                : 'text-text-secondary'
-                            }
+                            className={refreshOAuthMut.isPending && refreshOAuthMut.variables === item.id ? 'animate-spin text-klein-500' : 'text-text-secondary'}
                           />
                         </button>
                       )}
-                      <button
-                        className="btn btn-ghost btn-icon btn-sm"
-                        title="编辑"
-                        onClick={() => setEditTarget(r)}
-                      >
+                      <button className="btn btn-ghost btn-icon btn-sm" title="编辑" onClick={() => setEditTarget(item)}>
                         <Pencil size={14} className="text-text-secondary" />
                       </button>
                       <button
                         className="btn btn-ghost btn-icon btn-sm"
                         title={enabled ? '禁用' : '启用'}
-                        onClick={() => toggleStatus.mutate({ id: r.id, status: enabled ? 0 : 1 })}
+                        onClick={() => toggleStatus.mutate({ id: item.id, status: enabled ? 0 : 1 })}
                       >
                         <Power size={14} className={enabled ? 'text-success' : 'text-text-tertiary'} />
                       </button>
@@ -661,9 +596,8 @@ export default function TokenAccountsPage() {
                         className="btn btn-danger-ghost btn-icon btn-sm"
                         title="删除"
                         onClick={() => {
-                          if (confirm(`确定删除账号「${r.name}」？`)) {
-                            remove.mutate(r.id);
-                          }
+                          if (!confirm(`确认删除账号“${item.name}”吗？`)) return;
+                          remove.mutate(item.id);
                         }}
                       >
                         <Trash2 size={14} />
@@ -677,75 +611,38 @@ export default function TokenAccountsPage() {
         </table>
       </div>
 
-      {/* 分页栏 */}
       <div className="card card-section flex flex-wrap items-center gap-3 !py-2">
         <div className="flex items-center gap-2 text-small text-text-secondary">
           <span className="text-text-tertiary">每页</span>
-          <div className="relative">
-            <select
-              className="select select-sm pr-7 min-w-[5rem] tabular-nums"
-              value={pageSize}
-              onChange={(e) => {
-                const n = Number(e.target.value) || 20;
-                setPageSize(n);
-                setPage(1);
-              }}
-              aria-label="每页条数"
-            >
-              {PAGE_SIZE_OPTIONS.map((n) => (
-                <option key={n} value={n}>{n}</option>
-              ))}
-            </select>
-          </div>
+          <select
+            className="select select-sm w-[88px]"
+            value={pageSize}
+            onChange={(e) => {
+              setPageSize(Number(e.target.value) || 20);
+              setPage(1);
+            }}
+          >
+            {PAGE_SIZE_OPTIONS.map((size) => (
+              <option key={size} value={size}>
+                {size}
+              </option>
+            ))}
+          </select>
           <span className="text-text-tertiary">条</span>
         </div>
-
         <div className="text-small text-text-tertiary tabular-nums">
-          {total === 0
-            ? '0'
-            : `${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, total)} / ${fmtNumber(total)}`}
+          {total === 0 ? '0' : `${(page - 1) * pageSize + 1}-${Math.min(page * pageSize, total)} / ${fmtNumber(total)}`}
         </div>
-
-        <div className="flex items-center gap-1 ml-auto">
-          <button
-            type="button"
-            className="btn btn-outline btn-icon btn-sm"
-            disabled={page <= 1}
-            onClick={() => setPage(1)}
-            title="第一页"
-          >
-            <ChevronsLeft size={14} />
-          </button>
-          <button
-            type="button"
-            className="btn btn-outline btn-icon btn-sm"
-            disabled={page <= 1}
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
-            title="上一页"
-          >
+        <div className="ml-auto flex items-center gap-1">
+          <button className="btn btn-outline btn-icon btn-sm" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
             <ChevronLeft size={14} />
           </button>
-          <span className="px-2 text-small text-text-secondary tabular-nums min-w-[3.5rem] text-center">
+          <span className="min-w-[3.5rem] px-2 text-center text-small tabular-nums text-text-secondary">
             <span className="font-medium text-text-primary">{page}</span>
             <span className="text-text-tertiary"> / {lastPage}</span>
           </span>
-          <button
-            type="button"
-            className="btn btn-outline btn-icon btn-sm"
-            disabled={page >= lastPage}
-            onClick={() => setPage((p) => Math.min(lastPage, p + 1))}
-            title="下一页"
-          >
+          <button className="btn btn-outline btn-icon btn-sm" disabled={page >= lastPage} onClick={() => setPage((p) => Math.min(lastPage, p + 1))}>
             <ChevronRight size={14} />
-          </button>
-          <button
-            type="button"
-            className="btn btn-outline btn-icon btn-sm"
-            disabled={page >= lastPage}
-            onClick={() => setPage(lastPage)}
-            title="末页"
-          >
-            <ChevronsRight size={14} />
           </button>
         </div>
       </div>
@@ -759,6 +656,7 @@ export default function TokenAccountsPage() {
           }}
         />
       )}
+
       {openImport && (
         <ImportDialog
           onClose={() => setOpenImport(false)}
@@ -768,6 +666,17 @@ export default function TokenAccountsPage() {
           }}
         />
       )}
+
+      {openAssignProxy && (
+        <BatchAssignProxyDialog
+          accountIDs={selectedAccountIDs}
+          selectedCount={selectedAccountIDs.length}
+          onClose={() => setOpenAssignProxy(false)}
+          onSubmit={(body) => batchAssignProxy.mutate(body)}
+          submitting={batchAssignProxy.isPending}
+        />
+      )}
+
       {editTarget && (
         <EditDialog
           item={editTarget}
@@ -778,28 +687,10 @@ export default function TokenAccountsPage() {
           }}
         />
       )}
-      {purgeAllOpen && (
-        <PurgeAllDialog
-          provider={purgeProvider}
-          loading={purgeMut.isPending}
-          onClose={() => setPurgeAllOpen(false)}
-          onConfirm={() => {
-            purgeMut.mutate(
-              {
-                scope: 'all',
-                provider: purgeProvider,
-                confirm: 'DELETE_ALL_ACCOUNTS',
-              },
-              { onSuccess: () => setPurgeAllOpen(false) },
-            );
-          }}
-        />
-      )}
     </div>
   );
 }
 
-// ============== Create Dialog ==============
 function CreateDialog({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
   const [body, setBody] = useState<AccountCreateBody>({
     provider: 'gpt',
@@ -819,240 +710,172 @@ function CreateDialog({ onClose, onSuccess }: { onClose: () => void; onSuccess: 
     monthly_quota: 0,
     remark: '',
   });
-  const [showAdvanced, setShowAdvanced] = useState(false);
 
-  const isOAuth = body.auth_type === 'oauth';
+  const proxiesQ = useQuery({
+    queryKey: ['admin', 'proxies', 'create-select'],
+    queryFn: () => proxiesApi.list({ status: 1, page_size: 200 }),
+    staleTime: 30_000,
+  });
 
-  const m = useMutation({
-    mutationFn: (b: AccountCreateBody) => accountsApi.create(b),
+  const proxies = proxiesQ.data?.list ?? [];
+
+  const create = useMutation({
+    mutationFn: (payload: AccountCreateBody) => accountsApi.create(payload),
     onSuccess: () => {
-      toast.success('账号已添加');
+      toast.success('账号已创建');
       onSuccess();
     },
     onError: (e: ApiError) => toast.error(e.message),
   });
 
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!body.name.trim()) {
+      toast.error('请填写账号名称');
+      return;
+    }
+    const isOAuth = body.auth_type === 'oauth';
+    if (isOAuth) {
+      if (!body.access_token?.trim() && !body.refresh_token?.trim() && !body.credential?.trim()) {
+        toast.error('OAuth 账号至少填写 access_token、refresh_token 或 credential 之一');
+        return;
+      }
+    } else if (!body.credential?.trim()) {
+      toast.error('请填写凭证');
+      return;
+    }
+
+    create.mutate({
+      ...body,
+      name: body.name.trim(),
+      credential: body.credential?.trim() || undefined,
+      access_token: body.access_token?.trim() || undefined,
+      refresh_token: body.refresh_token?.trim() || undefined,
+      session_token: body.session_token?.trim() || undefined,
+      client_id: body.client_id?.trim() || undefined,
+      base_url: normalizeBaseURL(body.base_url),
+      proxy_id: body.proxy_id && body.proxy_id > 0 ? body.proxy_id : undefined,
+      weight: body.weight || 10,
+      rpm_limit: Math.max(0, body.rpm_limit || 0),
+      tpm_limit: Math.max(0, body.tpm_limit || 0),
+      daily_quota: Math.max(0, body.daily_quota || 0),
+      monthly_quota: Math.max(0, body.monthly_quota || 0),
+      remark: body.remark?.trim() || undefined,
+    });
+  };
+
   return (
     <Modal title="新增账号" onClose={onClose}>
-      <form
-        className="space-y-3"
-        onSubmit={(e) => {
-          e.preventDefault();
-          const name = body.name.trim();
-          if (!name) {
-            toast.error('请填写名称');
-            return;
-          }
-          const at = (body.access_token || '').trim();
-          const rt = (body.refresh_token || '').trim();
-          const st = (body.session_token || '').trim();
-          const cid = (body.client_id || '').trim();
-          const cred = (body.credential || '').trim();
-          if (isOAuth) {
-            if (!at && !rt) {
-              toast.error('请至少填写 Access Token 或 Refresh Token');
-              return;
-            }
-          } else if (!cred) {
-            toast.error(body.auth_type === 'cookie' ? '请填写 Grok Token' : '请填写 API Key');
-            return;
-          }
-          const payload: AccountCreateBody = {
-            provider: body.provider,
-            name,
-            auth_type: body.auth_type,
-            base_url: normalizeBaseURL(body.base_url),
-            proxy_id: body.proxy_id && body.proxy_id > 0 ? body.proxy_id : undefined,
-            weight: body.weight ?? 10,
-            rpm_limit: body.rpm_limit && body.rpm_limit > 0 ? body.rpm_limit : undefined,
-            tpm_limit: body.tpm_limit && body.tpm_limit > 0 ? body.tpm_limit : undefined,
-            daily_quota: body.daily_quota && body.daily_quota > 0 ? body.daily_quota : undefined,
-            monthly_quota:
-              body.monthly_quota && body.monthly_quota > 0 ? body.monthly_quota : undefined,
-            remark: body.remark?.trim() || undefined,
-          };
-          if (isOAuth) {
-            if (at) payload.access_token = at;
-            if (rt) payload.refresh_token = rt;
-            if (st) payload.session_token = st;
-            if (cid) payload.client_id = cid;
-          } else {
-            payload.credential = cred;
-          }
-          m.mutate(payload);
-        }}
-      >
+      <form className="space-y-3" onSubmit={submit}>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Provider">
             <select
               className="select"
               value={body.provider}
               onChange={(e) => {
-                const p = e.target.value as 'gpt' | 'grok';
-                const at = defaultAuthType(p);
-                setBody((s) => ({
-                  ...s,
-                  provider: p,
-                  auth_type: at,
-                  credential: at !== 'oauth' ? s.credential : '',
-                  access_token: at === 'oauth' ? s.access_token : '',
-                  refresh_token: at === 'oauth' ? s.refresh_token : '',
-                  session_token: at === 'oauth' ? s.session_token : '',
-                  client_id: at === 'oauth' ? s.client_id : '',
-                }));
+                const nextProvider = e.target.value as 'gpt' | 'grok';
+                setBody((prev) => ({ ...prev, provider: nextProvider, auth_type: defaultAuthType(nextProvider) }));
               }}
             >
-              <option value="gpt">GPT (生图)</option>
-              <option value="grok">GROK (生视频)</option>
+              <option value="gpt">GPT</option>
+              <option value="grok">GROK</option>
             </select>
           </Field>
-          <Field label="名称 / 标签">
-            <input
-              className="input"
-              placeholder={body.provider === 'gpt' ? 'GPT-Acc-001' : 'GROK-Acc-001'}
-              value={body.name}
-              onChange={(e) => setBody((s) => ({ ...s, name: e.target.value }))}
-            />
+          <Field label="认证类型">
+            <select className="select" value={body.auth_type} onChange={(e) => setBody((prev) => ({ ...prev, auth_type: e.target.value as AuthType }))}>
+              <option value="api_key">API Key</option>
+              <option value="oauth">OAuth</option>
+              <option value="cookie">Grok Token</option>
+            </select>
           </Field>
         </div>
 
-        {isOAuth ? (
+        <Field label="名称">
+          <input className="input" value={body.name} onChange={(e) => setBody((prev) => ({ ...prev, name: e.target.value }))} />
+        </Field>
+
+        {body.auth_type === 'oauth' ? (
           <div className="space-y-3">
-            <Field label="Access Token" hint="必填或与 Refresh Token 至少一项">
-              <textarea
-                className="textarea font-mono text-small min-h-[64px]"
-                placeholder="eyJhbGc..."
-                value={body.access_token || ''}
-                onChange={(e) => setBody((s) => ({ ...s, access_token: e.target.value }))}
-              />
+            <Field label="Access Token">
+              <textarea className="textarea min-h-[72px] font-mono text-small" value={body.access_token || ''} onChange={(e) => setBody((prev) => ({ ...prev, access_token: e.target.value }))} />
             </Field>
-            <Field label="Refresh Token" hint="过期后自动刷新 Access Token">
-              <textarea
-                className="textarea font-mono text-small min-h-[64px]"
-                placeholder="可选；建议与 AT 同时提供"
-                value={body.refresh_token || ''}
-                onChange={(e) => setBody((s) => ({ ...s, refresh_token: e.target.value }))}
-              />
+            <Field label="Refresh Token">
+              <textarea className="textarea min-h-[72px] font-mono text-small" value={body.refresh_token || ''} onChange={(e) => setBody((prev) => ({ ...prev, refresh_token: e.target.value }))} />
             </Field>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-3">
               <Field label="Session Token">
-                <input
-                  className="input font-mono text-small"
-                  placeholder="可选"
-                  value={body.session_token || ''}
-                  onChange={(e) => setBody((s) => ({ ...s, session_token: e.target.value }))}
-                />
+                <input className="input font-mono text-small" value={body.session_token || ''} onChange={(e) => setBody((prev) => ({ ...prev, session_token: e.target.value }))} />
               </Field>
               <Field label="Client ID">
-                <input
-                  className="input font-mono text-small"
-                  placeholder="留空使用系统默认"
-                  value={body.client_id || ''}
-                  onChange={(e) => setBody((s) => ({ ...s, client_id: e.target.value }))}
-                />
+                <input className="input font-mono text-small" value={body.client_id || ''} onChange={(e) => setBody((prev) => ({ ...prev, client_id: e.target.value }))} />
               </Field>
             </div>
+            <Field label="兼容 Credential">
+              <input className="input font-mono text-small" value={body.credential || ''} onChange={(e) => setBody((prev) => ({ ...prev, credential: e.target.value }))} />
+            </Field>
           </div>
         ) : (
-          <Field label={body.auth_type === 'cookie' ? 'Grok Token' : 'API Key'} hint="保存前 AES-256-GCM 加密落库">
-            <textarea
-              className="textarea font-mono text-small min-h-[80px]"
-              placeholder={body.auth_type === 'cookie' ? 'sso=... 或直接粘贴 SSO token' : 'xai-xxxxxxxxxxxxxxxxxxxxxxxx'}
-              value={body.credential || ''}
-              onChange={(e) => setBody((s) => ({ ...s, credential: e.target.value }))}
-            />
+          <Field label={body.auth_type === 'cookie' ? 'Grok Token' : 'API Key'}>
+            <textarea className="textarea min-h-[96px] font-mono text-small" value={body.credential || ''} onChange={(e) => setBody((prev) => ({ ...prev, credential: e.target.value }))} />
           </Field>
         )}
 
         <div className="grid grid-cols-2 gap-3">
-          <Field label="权重" hint="加权轮询时的相对权重，默认 10，范围 1–1000">
-            <input
-              type="number"
-              className="input"
-              min={1}
-              max={1000}
-              value={body.weight ?? 10}
-              onChange={(e) => setBody((s) => ({ ...s, weight: Number(e.target.value) || 10 }))}
-            />
+          <Field label="Base URL">
+            <input className="input" value={body.base_url || ''} onChange={(e) => setBody((prev) => ({ ...prev, base_url: e.target.value }))} placeholder="可选" />
           </Field>
-          <Field label="备注（可选）">
-            <input
-              className="input"
-              value={body.remark || ''}
-              onChange={(e) => setBody((s) => ({ ...s, remark: e.target.value }))}
-            />
+          <Field label="代理">
+            <select
+              className="select"
+              value={body.proxy_id ?? 0}
+              onChange={(e) => {
+                const proxyID = Number(e.target.value) || 0;
+                setBody((prev) => ({ ...prev, proxy_id: proxyID > 0 ? proxyID : undefined }));
+              }}
+            >
+              <option value={0}>无</option>
+              {proxies.map((proxy) => (
+                <option key={proxy.id} value={proxy.id}>
+                  {proxy.name}
+                </option>
+              ))}
+            </select>
           </Field>
         </div>
 
-        {/* 高级：限速 / 配额 */}
-        <button
-          type="button"
-          className="btn btn-ghost btn-sm gap-1"
-          onClick={() => setShowAdvanced((v) => !v)}
-        >
-          {showAdvanced ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-          高级（限速 / 配额，可选）
-        </button>
-        {showAdvanced && (
-          <div className="card card-flat p-3 space-y-3">
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="RPM 限速" hint="每分钟最大请求数；0 不限">
-                <input
-                  type="number"
-                  className="input"
-                  min={0}
-                  value={body.rpm_limit ?? 0}
-                  onChange={(e) =>
-                    setBody((s) => ({ ...s, rpm_limit: Math.max(0, Number(e.target.value) || 0) }))
-                  }
-                />
-              </Field>
-              <Field label="TPM 限速" hint="每分钟最大 token 数；0 不限">
-                <input
-                  type="number"
-                  className="input"
-                  min={0}
-                  value={body.tpm_limit ?? 0}
-                  onChange={(e) =>
-                    setBody((s) => ({ ...s, tpm_limit: Math.max(0, Number(e.target.value) || 0) }))
-                  }
-                />
-              </Field>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="每日配额" hint="单日最大调用次数；0 不限">
-                <input
-                  type="number"
-                  className="input"
-                  min={0}
-                  value={body.daily_quota ?? 0}
-                  onChange={(e) =>
-                    setBody((s) => ({ ...s, daily_quota: Math.max(0, Number(e.target.value) || 0) }))
-                  }
-                />
-              </Field>
-              <Field label="每月配额" hint="单月最大调用次数；0 不限">
-                <input
-                  type="number"
-                  className="input"
-                  min={0}
-                  value={body.monthly_quota ?? 0}
-                  onChange={(e) =>
-                    setBody((s) => ({
-                      ...s,
-                      monthly_quota: Math.max(0, Number(e.target.value) || 0),
-                    }))
-                  }
-                />
-              </Field>
-            </div>
-          </div>
-        )}
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="权重">
+            <input type="number" className="input" min={1} max={1000} value={body.weight || 10} onChange={(e) => setBody((prev) => ({ ...prev, weight: Number(e.target.value) || 10 }))} />
+          </Field>
+          <Field label="备注">
+            <input className="input" value={body.remark || ''} onChange={(e) => setBody((prev) => ({ ...prev, remark: e.target.value }))} />
+          </Field>
+        </div>
 
-        <div className="flex justify-end gap-2 pt-2">
-          <button type="button" className="btn btn-outline btn-md" onClick={onClose}>取消</button>
-          <button type="submit" className="btn btn-primary btn-md" disabled={m.isPending}>
-            {m.isPending ? '提交中…' : '保存'}
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="RPM">
+            <input type="number" className="input" min={0} value={body.rpm_limit || 0} onChange={(e) => setBody((prev) => ({ ...prev, rpm_limit: Number(e.target.value) || 0 }))} />
+          </Field>
+          <Field label="TPM">
+            <input type="number" className="input" min={0} value={body.tpm_limit || 0} onChange={(e) => setBody((prev) => ({ ...prev, tpm_limit: Number(e.target.value) || 0 }))} />
+          </Field>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="日额度">
+            <input type="number" className="input" min={0} value={body.daily_quota || 0} onChange={(e) => setBody((prev) => ({ ...prev, daily_quota: Number(e.target.value) || 0 }))} />
+          </Field>
+          <Field label="月额度">
+            <input type="number" className="input" min={0} value={body.monthly_quota || 0} onChange={(e) => setBody((prev) => ({ ...prev, monthly_quota: Number(e.target.value) || 0 }))} />
+          </Field>
+        </div>
+
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" className="btn btn-outline btn-md" onClick={onClose}>
+            取消
+          </button>
+          <button type="submit" className="btn btn-primary btn-md" disabled={create.isPending}>
+            {create.isPending ? '提交中…' : '保存'}
           </button>
         </div>
       </form>
@@ -1060,25 +883,6 @@ function CreateDialog({ onClose, onSuccess }: { onClose: () => void; onSuccess: 
   );
 }
 
-/** 解析 sub2api 导出的 account JSON（根级含 accounts[]） */
-function parseSub2ExportJson(raw: string): Sub2APIAccountItem[] {
-  let j: unknown;
-  try {
-    j = JSON.parse(raw);
-  } catch {
-    throw new Error('文件不是合法 JSON');
-  }
-  if (typeof j !== 'object' || j === null) {
-    throw new Error('JSON 根须为对象');
-  }
-  const accounts = (j as { accounts?: unknown }).accounts;
-  if (!Array.isArray(accounts)) {
-    throw new Error('请使用 sub2api / Codex 导出格式：根对象须含 accounts 数组');
-  }
-  return accounts as Sub2APIAccountItem[];
-}
-
-// ============== Import Dialog ==============
 function ImportDialog({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
   const [importMode, setImportMode] = useState<'lines' | 'sub2api'>('lines');
   const [body, setBody] = useState<AccountBatchImportBody>({
@@ -1091,33 +895,39 @@ function ImportDialog({ onClose, onSuccess }: { onClose: () => void; onSuccess: 
   });
   const [sub2Accounts, setSub2Accounts] = useState<Sub2APIAccountItem[] | null>(null);
   const [sub2FileLabel, setSub2FileLabel] = useState('');
-  const [sub2ChunkSize, setSub2ChunkSize] = useState(300);
   const [sub2Busy, setSub2Busy] = useState(false);
+  const [sub2ChunkSize, setSub2ChunkSize] = useState(300);
 
   const proxiesQ = useQuery({
-    queryKey: ['admin', 'proxies', 'select'],
+    queryKey: ['admin', 'proxies', 'import-select'],
     queryFn: () => proxiesApi.list({ status: 1, page_size: 200 }),
     staleTime: 30_000,
   });
-  const proxies: ProxyItem[] = proxiesQ.data?.list ?? [];
+
+  const proxies = proxiesQ.data?.list ?? [];
 
   const linePlaceholder = useMemo(() => {
     switch (body.auth_type) {
       case 'oauth':
-        return '每行 refresh_token，或 name@@token';
+        return '每行一个 refresh_token，或 name@@token';
       case 'cookie':
-        return '每行一个 Grok SSO token，或 name@@sso-token';
-      case 'api_key':
+        return '每行一个 Grok Token，或 name@@token';
       default:
-        return 'sk-… 或 name@@sk-… 或 key@https://…';
+        return 'sk-xxxx 或 name@@sk-xxxx 或 key@https://example.com';
     }
   }, [body.auth_type]);
 
-  const m = useMutation({
-    mutationFn: (b: AccountBatchImportBody) => accountsApi.batchImport(b),
-    onSuccess: (r) => {
-      const sk = r.skipped > 0 ? `，跳过 ${r.skipped} 条` : '';
-      toast.success(`成功导入 ${r.imported} 条${sk}`);
+  const importLines = useMutation({
+    mutationFn: (payload: AccountBatchImportBody) => accountsApi.batchImport(payload),
+    onSuccess: (res) => {
+      const parts = [
+        `成功导入 ${res.imported} 条`,
+        res.skipped ? `跳过 ${res.skipped} 条` : '',
+        typeof res.detected === 'number' ? `已识别 ${res.detected} 条` : '',
+        typeof res.pending === 'number' ? `待识别 ${res.pending} 条` : '',
+        typeof res.failed === 'number' && res.failed > 0 ? `失败 ${res.failed} 条` : '',
+      ].filter(Boolean);
+      toast.success(parts.join('，'));
       onSuccess();
     },
     onError: (e: ApiError) => toast.error(e.message),
@@ -1125,29 +935,41 @@ function ImportDialog({ onClose, onSuccess }: { onClose: () => void; onSuccess: 
 
   const runSub2Import = async () => {
     if (!sub2Accounts?.length) {
-      toast.error('请先选择合法的 sub2api JSON 文件');
+      toast.error('请先选择有效的 JSON 导入文件');
       return;
     }
-    const chunk = Math.min(500, Math.max(50, sub2ChunkSize));
+    const chunkSize = Math.min(500, Math.max(50, sub2ChunkSize));
     setSub2Busy(true);
-    let totalImported = 0;
-    let totalSkipped = 0;
+    let imported = 0;
+    let skipped = 0;
+    let detected = 0;
+    let pending = 0;
+    let failed = 0;
     try {
-      for (let i = 0; i < sub2Accounts.length; i += chunk) {
-        const slice = sub2Accounts.slice(i, i + chunk);
-        const r = await accountsApi.batchImport({
+      for (let index = 0; index < sub2Accounts.length; index += chunkSize) {
+        const slice = sub2Accounts.slice(index, index + chunkSize);
+        const res = await accountsApi.batchImport({
           format: 'sub2api',
           provider: body.provider,
           base_url: normalizeBaseURL(body.base_url),
           proxy_id: body.proxy_id && body.proxy_id > 0 ? body.proxy_id : undefined,
-          weight: body.weight ?? 10,
+          weight: body.weight || 10,
           accounts: slice,
         });
-        totalImported += r.imported;
-        totalSkipped += r.skipped;
+        imported += res.imported;
+        skipped += res.skipped;
+        detected += res.detected ?? 0;
+        pending += res.pending ?? 0;
+        failed += res.failed ?? 0;
       }
-      const sk = totalSkipped > 0 ? `，跳过 ${totalSkipped}` : '';
-      toast.success(`完成：${totalImported} 条${sk}`);
+      const parts = [
+        `导入 ${imported} 条`,
+        skipped ? `跳过 ${skipped} 条` : '',
+        detected ? `已识别 ${detected} 条` : '',
+        pending ? `待识别 ${pending} 条` : '',
+        failed ? `失败 ${failed} 条` : '',
+      ].filter(Boolean);
+      toast.success(parts.join('，'));
       onSuccess();
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : '导入失败');
@@ -1157,198 +979,138 @@ function ImportDialog({ onClose, onSuccess }: { onClose: () => void; onSuccess: 
   };
 
   return (
-    <Modal title="批量导入" onClose={onClose} wide>
-      <div className="space-y-2">
-        <div className="flex flex-wrap gap-1.5">
-          <button
-            type="button"
-            className={`btn btn-sm ${importMode === 'lines' ? 'btn-primary' : 'btn-outline'}`}
-            onClick={() => setImportMode('lines')}
-          >
-            文本
+    <Modal title="批量导入账号" onClose={onClose} wide>
+      <div className="space-y-3">
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className={`btn btn-sm ${importMode === 'lines' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setImportMode('lines')}>
+            文本导入
           </button>
-          <button
-            type="button"
-            className={`btn btn-sm ${importMode === 'sub2api' ? 'btn-primary' : 'btn-outline'}`}
-            onClick={() => setImportMode('sub2api')}
-          >
-            JSON
+          <button type="button" className={`btn btn-sm ${importMode === 'sub2api' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setImportMode('sub2api')}>
+            JSON 导入
           </button>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
           <Field label="Provider">
             <select
               className="select select-sm"
               value={body.provider}
               onChange={(e) => {
-                const p = e.target.value as 'gpt' | 'grok';
-                setBody((s) => ({ ...s, provider: p, auth_type: defaultAuthType(p) }));
+                const provider = e.target.value as 'gpt' | 'grok';
+                setBody((prev) => ({ ...prev, provider, auth_type: defaultAuthType(provider) }));
               }}
             >
               <option value="gpt">GPT</option>
               <option value="grok">GROK</option>
             </select>
           </Field>
-          {importMode === 'lines' ? (
-            <Field label="类型">
-              <select
-                className="select select-sm"
-                value={body.auth_type}
-                onChange={(e) =>
-                  setBody((s) => ({
-                    ...s,
-                    auth_type: e.target.value as 'api_key' | 'oauth' | 'cookie',
-                  }))
-                }
-              >
-                <option value="api_key">API Key</option>
-                <option value="oauth">OAuth</option>
-                <option value="cookie">Grok Token</option>
-              </select>
-            </Field>
-          ) : (
-            <Field label="每批">
-              <input
-                type="number"
-                className="input input-sm"
-                min={50}
-                max={500}
-                value={sub2ChunkSize}
-                onChange={(e) =>
-                  setSub2ChunkSize(Math.min(500, Math.max(50, Number(e.target.value) || 300)))
-                }
-              />
-            </Field>
-          )}
-          <Field label="权重">
-            <input
-              type="number"
-              className="input input-sm"
-              min={1}
-              max={1000}
-              value={body.weight ?? 10}
-              onChange={(e) => setBody((s) => ({ ...s, weight: Number(e.target.value) || 10 }))}
-            />
+          <Field label="认证类型">
+            <select className="select select-sm" value={body.auth_type} onChange={(e) => setBody((prev) => ({ ...prev, auth_type: e.target.value as AuthType }))}>
+              <option value="api_key">API Key</option>
+              <option value="oauth">OAuth</option>
+              <option value="cookie">Grok Token</option>
+            </select>
           </Field>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          <Field label="Base URL">
-            <input
-              className="input input-sm"
-              placeholder="可选"
-              value={body.base_url || ''}
-              onChange={(e) => setBody((s) => ({ ...s, base_url: e.target.value }))}
-            />
-          </Field>
-          <Field label="代理">
+          <Field label="默认代理">
             <select
               className="select select-sm"
               value={body.proxy_id ?? 0}
               onChange={(e) => {
-                const n = Number(e.target.value) || 0;
-                setBody((s) => ({ ...s, proxy_id: n > 0 ? n : undefined }));
+                const proxyID = Number(e.target.value) || 0;
+                setBody((prev) => ({ ...prev, proxy_id: proxyID > 0 ? proxyID : undefined }));
               }}
             >
               <option value={0}>无</option>
-              {proxies.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
+              {proxies.map((proxy) => (
+                <option key={proxy.id} value={proxy.id}>
+                  {proxy.name}
                 </option>
               ))}
             </select>
           </Field>
+          <Field label="权重">
+            <input type="number" className="input input-sm" min={1} max={1000} value={body.weight || 10} onChange={(e) => setBody((prev) => ({ ...prev, weight: Number(e.target.value) || 10 }))} />
+          </Field>
         </div>
+
+        <Field label="Base URL">
+          <input className="input input-sm" value={body.base_url || ''} onChange={(e) => setBody((prev) => ({ ...prev, base_url: e.target.value }))} placeholder="可选" />
+        </Field>
 
         {importMode === 'lines' ? (
           <form
-            className="space-y-2"
+            className="space-y-3"
             onSubmit={(e) => {
               e.preventDefault();
               if (!body.text?.trim()) {
                 toast.error('请粘贴账号列表');
                 return;
               }
-              if (!body.auth_type) {
-                toast.error('请选择凭证类型');
-                return;
-              }
-              m.mutate({
+              importLines.mutate({
                 format: 'lines',
                 provider: body.provider,
                 auth_type: body.auth_type,
                 base_url: normalizeBaseURL(body.base_url),
                 proxy_id: body.proxy_id && body.proxy_id > 0 ? body.proxy_id : undefined,
-                weight: body.weight ?? 10,
+                weight: body.weight || 10,
                 text: body.text,
               });
             }}
           >
             <Field label="每行一条">
               <textarea
-                className="textarea textarea-sm font-mono text-small min-h-[140px]"
+                className="textarea min-h-[180px] font-mono text-small"
                 placeholder={linePlaceholder}
-                value={body.text ?? ''}
-                onChange={(e) => setBody((s) => ({ ...s, text: e.target.value }))}
+                value={body.text || ''}
+                onChange={(e) => setBody((prev) => ({ ...prev, text: e.target.value }))}
               />
             </Field>
-            <div className="flex justify-end gap-2 pt-1">
-              <button type="button" className="btn btn-outline btn-sm" onClick={onClose}>
+            <div className="flex justify-end gap-2">
+              <button type="button" className="btn btn-outline btn-md" onClick={onClose}>
                 取消
               </button>
-              <button type="submit" className="btn btn-primary btn-sm" disabled={m.isPending}>
-                {m.isPending ? '…' : '导入'}
+              <button type="submit" className="btn btn-primary btn-md" disabled={importLines.isPending}>
+                {importLines.isPending ? '导入中…' : '开始导入'}
               </button>
             </div>
           </form>
         ) : (
-          <div className="space-y-2">
-            <Field label="文件">
+          <div className="space-y-3">
+            <Field label="JSON 文件">
               <div className="flex flex-wrap items-center gap-2">
                 <label className="btn btn-outline btn-sm cursor-pointer">
-                  选择
+                  选择文件
                   <input
                     type="file"
                     accept=".json,application/json"
                     className="hidden"
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (!f) return;
-                      const reader = new FileReader();
-                      reader.onload = () => {
-                        try {
-                          const list = parseSub2ExportJson(String(reader.result ?? ''));
-                          setSub2Accounts(list);
-                          setSub2FileLabel(`${f.name} · ${list.length}`);
-                          toast.success(`已解析 ${list.length} 条`);
-                        } catch (err) {
-                          setSub2Accounts(null);
-                          setSub2FileLabel('');
-                          toast.error(err instanceof Error ? err.message : '解析失败');
-                        }
-                      };
-                      reader.readAsText(f, 'UTF-8');
-                      e.target.value = '';
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      try {
+                        const text = await file.text();
+                        const accounts = parseSub2ExportJson(text);
+                        setSub2Accounts(accounts);
+                        setSub2FileLabel(`${file.name} / ${accounts.length} 条`);
+                        toast.success(`已读取 ${accounts.length} 条账号`);
+                      } catch (err) {
+                        toast.error(err instanceof Error ? err.message : '文件解析失败');
+                      }
                     }}
                   />
                 </label>
-                <span className="text-tiny text-text-secondary truncate max-w-[240px]">
-                  {sub2FileLabel || '未选'}
-                </span>
+                <span className="text-small text-text-tertiary">{sub2FileLabel || '未选择文件'}</span>
               </div>
             </Field>
-            <div className="flex justify-end gap-2 pt-1">
-              <button type="button" className="btn btn-outline btn-sm" onClick={onClose}>
+            <Field label="每批数量">
+              <input type="number" className="input input-sm w-[160px]" min={50} max={500} value={sub2ChunkSize} onChange={(e) => setSub2ChunkSize(Math.min(500, Math.max(50, Number(e.target.value) || 300)))} />
+            </Field>
+            <div className="flex justify-end gap-2">
+              <button type="button" className="btn btn-outline btn-md" onClick={onClose}>
                 取消
               </button>
-              <button
-                type="button"
-                className="btn btn-primary btn-sm"
-                disabled={sub2Busy || !sub2Accounts?.length}
-                onClick={() => void runSub2Import()}
-              >
-                {sub2Busy ? '…' : '导入'}
+              <button type="button" className="btn btn-primary btn-md" onClick={() => void runSub2Import()} disabled={sub2Busy}>
+                {sub2Busy ? '导入中…' : '开始导入'}
               </button>
             </div>
           </div>
@@ -1358,7 +1120,130 @@ function ImportDialog({ onClose, onSuccess }: { onClose: () => void; onSuccess: 
   );
 }
 
-// ============== Edit Dialog ==============
+function BatchAssignProxyDialog({
+  accountIDs,
+  selectedCount,
+  onClose,
+  onSubmit,
+  submitting,
+}: {
+  accountIDs: number[];
+  selectedCount: number;
+  onClose: () => void;
+  onSubmit: (body: AccountBatchAssignProxyBody) => void;
+  submitting: boolean;
+}) {
+  const [mode, setMode] = useState<'single' | 'cycle'>('single');
+  const [proxyID, setProxyID] = useState(0);
+  const [proxyIDs, setProxyIDs] = useState<number[]>([]);
+
+  const proxiesQ = useQuery({
+    queryKey: ['admin', 'proxies', 'assign-select'],
+    queryFn: () => proxiesApi.list({ status: 1, page_size: 200 }),
+    staleTime: 30_000,
+  });
+
+  const proxies = proxiesQ.data?.list ?? [];
+
+  const toggleCycleProxy = (id: number) => {
+    setProxyIDs((prev) => {
+      if (prev.includes(id)) return prev.filter((item) => item !== id);
+      return [...prev, id];
+    });
+  };
+
+  const submit = () => {
+    if (accountIDs.length === 0) {
+      toast.error('请先选择 Token');
+      return;
+    }
+    if (mode === 'single') {
+      if (!proxyID) {
+        toast.error('请选择一个代理');
+        return;
+      }
+      onSubmit({ mode, account_ids: accountIDs, proxy_id: proxyID });
+      return;
+    }
+    if (proxyIDs.length === 0) {
+      toast.error('请至少选择一个代理');
+      return;
+    }
+    onSubmit({ mode, account_ids: accountIDs, proxy_ids: proxyIDs });
+  };
+
+  return (
+    <Modal title="批量设置代理" onClose={onClose}>
+      <div className="space-y-4">
+        <div className="card card-flat p-3 text-small text-text-secondary">
+          已选择 <span className="font-medium text-text-primary">{selectedCount}</span> 个 Token。
+          单代理模式会全部绑定同一个代理，循环模式会按你勾选的代理顺序轮流分配。
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className={`btn btn-sm ${mode === 'single' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setMode('single')}>
+            单代理批量绑定
+          </button>
+          <button type="button" className={`btn btn-sm ${mode === 'cycle' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setMode('cycle')}>
+            循环分配代理
+          </button>
+        </div>
+
+        {proxiesQ.isLoading ? (
+          <div className="text-small text-text-tertiary">正在加载代理列表…</div>
+        ) : proxies.length === 0 ? (
+          <div className="empty-state">
+            <p className="empty-state-title">没有可用代理</p>
+            <p className="empty-state-desc">请先在代理管理中启用至少一个代理。</p>
+          </div>
+        ) : mode === 'single' ? (
+          <Field label="选择代理">
+            <select className="select" value={proxyID} onChange={(e) => setProxyID(Number(e.target.value) || 0)}>
+              <option value={0}>请选择</option>
+              {proxies.map((proxy) => (
+                <option key={proxy.id} value={proxy.id}>
+                  {proxy.name} / {proxy.host}:{proxy.port}
+                </option>
+              ))}
+            </select>
+          </Field>
+        ) : (
+          <div className="space-y-2">
+            <div className="text-small text-text-secondary">
+              当前顺序：
+              {proxyIDs.length > 0
+                ? ` ${proxyIDs.map((id) => proxies.find((proxy) => proxy.id === id)?.name || `#${id}`).join(' → ')}`
+                : ' 暂无'}
+            </div>
+            <div className="max-h-[280px] space-y-2 overflow-y-auto rounded-lg border border-border p-3">
+              {proxies.map((proxy) => (
+                <label key={proxy.id} className="flex cursor-pointer items-center justify-between gap-3 rounded-md border border-border px-3 py-2 hover:bg-surface-2">
+                  <span className="min-w-0">
+                    <span className="block text-small font-medium text-text-primary">{proxy.name}</span>
+                    <span className="block text-tiny text-text-tertiary">
+                      {proxy.protocol} / {proxy.host}:{proxy.port}
+                    </span>
+                  </span>
+                  <input type="checkbox" className="rounded border-border" checked={proxyIDs.includes(proxy.id)} onChange={() => toggleCycleProxy(proxy.id)} />
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <button type="button" className="btn btn-outline btn-md" onClick={onClose}>
+            取消
+          </button>
+          <button type="button" className="btn btn-primary btn-md" onClick={submit} disabled={submitting || proxiesQ.isLoading || proxies.length === 0}>
+            {submitting ? '保存中…' : '确认分配'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 function EditDialog({
   item,
   onClose,
@@ -1368,279 +1253,178 @@ function EditDialog({
   onClose: () => void;
   onSuccess: () => void;
 }) {
-  const isOAuth = item.auth_type === 'oauth';
   const [body, setBody] = useState<AccountUpdateBody>({
     name: item.name,
+    credential: '',
+    access_token: '',
+    refresh_token: '',
+    session_token: '',
+    client_id: '',
+    base_url: item.base_url || '',
+    proxy_id: item.proxy_id || 0,
     weight: item.weight,
     rpm_limit: item.rpm_limit,
     tpm_limit: item.tpm_limit,
     daily_quota: item.daily_quota,
     monthly_quota: item.monthly_quota,
-    remark: item.remark ?? '',
-    access_token: '',
-    refresh_token: '',
-    session_token: '',
-    client_id: '',
-    credential: '',
+    remark: item.remark || '',
   });
-  const [showAdvanced, setShowAdvanced] = useState(false);
 
-  // 拉取明文凭证回填（管理员专用）
+  const isOAuth = item.auth_type === 'oauth';
+
+  const proxiesQ = useQuery({
+    queryKey: ['admin', 'proxies', 'edit-select'],
+    queryFn: () => proxiesApi.list({ status: 1, page_size: 200 }),
+    staleTime: 30_000,
+  });
+
   const secretsQ = useQuery({
     queryKey: ['admin', 'accounts', item.id, 'secrets'],
     queryFn: () => accountsApi.secrets(item.id),
     staleTime: 0,
     gcTime: 0,
   });
-  // 记录初始明文，提交时只发送被改动的字段，避免无意义重复加密 / 清空 AT。
-  const initialRef = useRef({
-    access_token: '',
-    refresh_token: '',
-    session_token: '',
-    client_id: '',
-    credential: '',
-  });
+
   useEffect(() => {
-    const s = secretsQ.data;
-    if (!s) return;
-    const next = {
-      access_token: s.access_token ?? '',
-      refresh_token: s.refresh_token ?? '',
-      session_token: s.session_token ?? '',
-      client_id: s.client_id ?? '',
-      credential: s.credential ?? '',
-    };
-    initialRef.current = next;
-    setBody((prev) => ({ ...prev, ...next }));
+    const secrets = secretsQ.data;
+    if (!secrets) return;
+    setBody((prev) => ({
+      ...prev,
+      credential: secrets.credential || '',
+      access_token: secrets.access_token || '',
+      refresh_token: secrets.refresh_token || '',
+      session_token: secrets.session_token || '',
+      client_id: secrets.client_id || '',
+    }));
   }, [secretsQ.data]);
 
-  const m = useMutation({
-    mutationFn: (b: AccountUpdateBody) => accountsApi.update(item.id, b),
+  const proxies = proxiesQ.data?.list ?? [];
+
+  const update = useMutation({
+    mutationFn: (payload: AccountUpdateBody) => accountsApi.update(item.id, payload),
     onSuccess: () => {
-      toast.success('已保存');
+      toast.success('账号已更新');
       onSuccess();
     },
     onError: (e: ApiError) => toast.error(e.message),
   });
 
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!body.name?.trim()) {
+      toast.error('请填写账号名称');
+      return;
+    }
+    update.mutate({
+      ...body,
+      name: body.name.trim(),
+      credential: body.credential?.trim() || undefined,
+      access_token: body.access_token?.trim() || undefined,
+      refresh_token: body.refresh_token?.trim() || undefined,
+      session_token: body.session_token?.trim() || undefined,
+      client_id: body.client_id?.trim() || undefined,
+      base_url: normalizeBaseURL(body.base_url),
+      proxy_id: body.proxy_id && body.proxy_id > 0 ? body.proxy_id : 0,
+      weight: body.weight || 10,
+      rpm_limit: Math.max(0, body.rpm_limit || 0),
+      tpm_limit: Math.max(0, body.tpm_limit || 0),
+      daily_quota: Math.max(0, body.daily_quota || 0),
+      monthly_quota: Math.max(0, body.monthly_quota || 0),
+      remark: body.remark?.trim() || '',
+    });
+  };
+
   return (
-    <Modal title={`编辑账号 · ${item.name}`} onClose={onClose}>
-      <form
-        className="space-y-3"
-        onSubmit={(e) => {
-          e.preventDefault();
-          const name = (body.name ?? '').trim();
-          if (!name) {
-            toast.error('请填写名称');
-            return;
-          }
-          const payload: AccountUpdateBody = {
-            name,
-            weight: body.weight,
-            rpm_limit: Math.max(0, body.rpm_limit ?? 0),
-            tpm_limit: Math.max(0, body.tpm_limit ?? 0),
-            daily_quota: Math.max(0, body.daily_quota ?? 0),
-            monthly_quota: Math.max(0, body.monthly_quota ?? 0),
-            remark: (body.remark ?? '').trim(),
-          };
-          const init = initialRef.current;
-          if (isOAuth) {
-            const at = (body.access_token ?? '').trim();
-            const rt = (body.refresh_token ?? '').trim();
-            const st = (body.session_token ?? '').trim();
-            const cid = (body.client_id ?? '').trim();
-            if (at !== init.access_token) payload.access_token = at;
-            if (rt !== init.refresh_token) payload.refresh_token = rt;
-            if (st !== init.session_token) payload.session_token = st;
-            if (cid !== init.client_id) payload.client_id = cid;
-          } else {
-            const c = (body.credential ?? '').trim();
-            if (c !== init.credential) payload.credential = c;
-          }
-          m.mutate(payload);
-        }}
-      >
+    <Modal title={`编辑账号 / ${item.name}`} onClose={onClose}>
+      <form className="space-y-3" onSubmit={submit}>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Provider" hint="创建后不可更改">
-            <input
-              className="input bg-bg-elevated text-text-secondary"
-              value={item.provider.toUpperCase()}
-              readOnly
-              disabled
-            />
+          <Field label="Provider">
+            <input className="input bg-bg-elevated text-text-secondary" value={item.provider.toUpperCase()} readOnly disabled />
           </Field>
-          <Field label="名称 / 标签">
-            <input
-              className="input"
-              value={body.name ?? ''}
-              onChange={(e) => setBody((s) => ({ ...s, name: e.target.value }))}
-            />
+          <Field label="名称">
+            <input className="input" value={body.name || ''} onChange={(e) => setBody((prev) => ({ ...prev, name: e.target.value }))} />
           </Field>
         </div>
 
         {isOAuth ? (
           <div className="space-y-3">
-            <div className="text-tiny text-text-tertiary inline-flex items-center gap-2">
-              {secretsQ.isLoading ? (
-                <>
-                  <RotateCw size={12} className="animate-spin" />
-                  正在解密读取已有凭证…
-                </>
-              ) : secretsQ.isError ? (
-                <span className="text-warning inline-flex items-center gap-1">
-                  <AlertCircle size={12} /> 读取明文失败，留空表示保持原值
-                </span>
-              ) : (
-                <span>已读取原始凭证，可直接修改后保存（清空表示移除该字段）</span>
-              )}
-              <span className="ml-1 badge badge-outline text-tiny">RT {item.has_refresh_token ? '✓' : '✗'}</span>
-              <span className="badge badge-outline text-tiny">AT {item.has_access_token ? '✓' : '∅'}</span>
-            </div>
-            <Field label="Access Token" hint="修改后会重新解析新的过期时间；清空则移除">
-              <textarea
-                className="textarea font-mono text-small min-h-[64px]"
-                placeholder={secretsQ.isLoading ? '加载中…' : '可清空'}
-                value={body.access_token ?? ''}
-                onChange={(e) => setBody((s) => ({ ...s, access_token: e.target.value }))}
-              />
+            <Field label="Access Token" hint={secretsQ.isLoading ? '正在读取已存凭证…' : undefined}>
+              <textarea className="textarea min-h-[72px] font-mono text-small" value={body.access_token || ''} onChange={(e) => setBody((prev) => ({ ...prev, access_token: e.target.value }))} />
             </Field>
-            <Field label="Refresh Token" hint="修改后会替换并清空 Access Token；清空则移除">
-              <textarea
-                className="textarea font-mono text-small min-h-[64px]"
-                placeholder={secretsQ.isLoading ? '加载中…' : '可清空'}
-                value={body.refresh_token ?? ''}
-                onChange={(e) => setBody((s) => ({ ...s, refresh_token: e.target.value }))}
-              />
+            <Field label="Refresh Token">
+              <textarea className="textarea min-h-[72px] font-mono text-small" value={body.refresh_token || ''} onChange={(e) => setBody((prev) => ({ ...prev, refresh_token: e.target.value }))} />
             </Field>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <Field label="Session Token" hint="清空则移除">
-                <input
-                  className="input font-mono text-small"
-                  placeholder={secretsQ.isLoading ? '加载中…' : '可清空'}
-                  value={body.session_token ?? ''}
-                  onChange={(e) => setBody((s) => ({ ...s, session_token: e.target.value }))}
-                />
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Session Token">
+                <input className="input font-mono text-small" value={body.session_token || ''} onChange={(e) => setBody((prev) => ({ ...prev, session_token: e.target.value }))} />
               </Field>
-              <Field label="Client ID" hint="清空则使用系统默认">
-                <input
-                  className="input font-mono text-small"
-                  placeholder={secretsQ.isLoading ? '加载中…' : '可清空使用系统默认'}
-                  value={body.client_id ?? ''}
-                  onChange={(e) => setBody((s) => ({ ...s, client_id: e.target.value }))}
-                />
+              <Field label="Client ID">
+                <input className="input font-mono text-small" value={body.client_id || ''} onChange={(e) => setBody((prev) => ({ ...prev, client_id: e.target.value }))} />
               </Field>
             </div>
           </div>
         ) : (
-          <Field
-            label="API Key"
-            hint={
-              secretsQ.isLoading
-                ? '正在解密读取…'
-                : secretsQ.isError
-                  ? '读取明文失败，留空表示保持原值'
-                  : '已读取原始凭证；保存前 AES-256-GCM 加密落库'
-            }
-          >
-            <textarea
-              className="textarea font-mono text-small min-h-[80px]"
-              placeholder={secretsQ.isLoading ? '加载中…' : 'xai-xxxxxxxxxxxxxxxxxxxxxxxx'}
-              value={body.credential ?? ''}
-              onChange={(e) => setBody((s) => ({ ...s, credential: e.target.value }))}
-            />
+          <Field label={item.auth_type === 'cookie' ? 'Grok Token' : 'API Key'} hint={secretsQ.isLoading ? '正在读取已存凭证…' : undefined}>
+            <textarea className="textarea min-h-[96px] font-mono text-small" value={body.credential || ''} onChange={(e) => setBody((prev) => ({ ...prev, credential: e.target.value }))} />
           </Field>
         )}
 
         <div className="grid grid-cols-2 gap-3">
-          <Field label="权重" hint="加权轮询时的相对权重，范围 1–1000">
-            <input
-              type="number"
-              className="input"
-              min={1}
-              max={1000}
-              value={body.weight ?? 10}
-              onChange={(e) => setBody((s) => ({ ...s, weight: Number(e.target.value) || 10 }))}
-            />
+          <Field label="Base URL">
+            <input className="input" value={body.base_url || ''} onChange={(e) => setBody((prev) => ({ ...prev, base_url: e.target.value }))} placeholder="可选" />
           </Field>
-          <Field label="备注（可选）">
-            <input
-              className="input"
-              value={body.remark ?? ''}
-              onChange={(e) => setBody((s) => ({ ...s, remark: e.target.value }))}
-            />
+          <Field label="代理">
+            <select
+              className="select"
+              value={body.proxy_id ?? 0}
+              onChange={(e) => {
+                const proxyID = Number(e.target.value) || 0;
+                setBody((prev) => ({ ...prev, proxy_id: proxyID > 0 ? proxyID : 0 }));
+              }}
+            >
+              <option value={0}>无</option>
+              {proxies.map((proxy) => (
+                <option key={proxy.id} value={proxy.id}>
+                  {proxy.name}
+                </option>
+              ))}
+            </select>
           </Field>
         </div>
 
-        <button
-          type="button"
-          className="btn btn-ghost btn-sm gap-1"
-          onClick={() => setShowAdvanced((v) => !v)}
-        >
-          {showAdvanced ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-          高级（限速 / 配额）
-        </button>
-        {showAdvanced && (
-          <div className="card card-flat p-3 space-y-3">
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="RPM 限速" hint="每分钟最大请求数；0 不限">
-                <input
-                  type="number"
-                  className="input"
-                  min={0}
-                  value={body.rpm_limit ?? 0}
-                  onChange={(e) =>
-                    setBody((s) => ({ ...s, rpm_limit: Math.max(0, Number(e.target.value) || 0) }))
-                  }
-                />
-              </Field>
-              <Field label="TPM 限速" hint="每分钟最大 token 数；0 不限">
-                <input
-                  type="number"
-                  className="input"
-                  min={0}
-                  value={body.tpm_limit ?? 0}
-                  onChange={(e) =>
-                    setBody((s) => ({ ...s, tpm_limit: Math.max(0, Number(e.target.value) || 0) }))
-                  }
-                />
-              </Field>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="每日配额" hint="单日最大调用次数；0 不限">
-                <input
-                  type="number"
-                  className="input"
-                  min={0}
-                  value={body.daily_quota ?? 0}
-                  onChange={(e) =>
-                    setBody((s) => ({ ...s, daily_quota: Math.max(0, Number(e.target.value) || 0) }))
-                  }
-                />
-              </Field>
-              <Field label="每月配额" hint="单月最大调用次数；0 不限">
-                <input
-                  type="number"
-                  className="input"
-                  min={0}
-                  value={body.monthly_quota ?? 0}
-                  onChange={(e) =>
-                    setBody((s) => ({
-                      ...s,
-                      monthly_quota: Math.max(0, Number(e.target.value) || 0),
-                    }))
-                  }
-                />
-              </Field>
-            </div>
-          </div>
-        )}
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="权重">
+            <input type="number" className="input" min={1} max={1000} value={body.weight || 10} onChange={(e) => setBody((prev) => ({ ...prev, weight: Number(e.target.value) || 10 }))} />
+          </Field>
+          <Field label="备注">
+            <input className="input" value={body.remark || ''} onChange={(e) => setBody((prev) => ({ ...prev, remark: e.target.value }))} />
+          </Field>
+        </div>
 
-        <div className="flex justify-end gap-2 pt-2">
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="RPM">
+            <input type="number" className="input" min={0} value={body.rpm_limit || 0} onChange={(e) => setBody((prev) => ({ ...prev, rpm_limit: Number(e.target.value) || 0 }))} />
+          </Field>
+          <Field label="TPM">
+            <input type="number" className="input" min={0} value={body.tpm_limit || 0} onChange={(e) => setBody((prev) => ({ ...prev, tpm_limit: Number(e.target.value) || 0 }))} />
+          </Field>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="日额度">
+            <input type="number" className="input" min={0} value={body.daily_quota || 0} onChange={(e) => setBody((prev) => ({ ...prev, daily_quota: Number(e.target.value) || 0 }))} />
+          </Field>
+          <Field label="月额度">
+            <input type="number" className="input" min={0} value={body.monthly_quota || 0} onChange={(e) => setBody((prev) => ({ ...prev, monthly_quota: Number(e.target.value) || 0 }))} />
+          </Field>
+        </div>
+
+        <div className="flex justify-end gap-2 pt-1">
           <button type="button" className="btn btn-outline btn-md" onClick={onClose}>
             取消
           </button>
-          <button type="submit" className="btn btn-primary btn-md" disabled={m.isPending}>
-            {m.isPending ? '保存中…' : '保存'}
+          <button type="submit" className="btn btn-primary btn-md" disabled={update.isPending}>
+            {update.isPending ? '保存中…' : '保存'}
           </button>
         </div>
       </form>
@@ -1648,78 +1432,6 @@ function EditDialog({
   );
 }
 
-// ============== Purge-All Confirm Dialog ==============
-function PurgeAllDialog({
-  provider,
-  loading,
-  onClose,
-  onConfirm,
-}: {
-  provider?: 'gpt' | 'grok';
-  loading: boolean;
-  onClose: () => void;
-  onConfirm: () => void;
-}) {
-  const KEYWORD = '删除全部';
-  const [text, setText] = useState('');
-  const ok = text.trim() === KEYWORD;
-  const scopeLabel = provider ? `${provider.toUpperCase()} Provider` : '全部 Provider';
-
-  return (
-    <Modal title="软删全部账号 · 危险操作" onClose={onClose}>
-      <div className="space-y-4">
-        <div className="card card-flat p-3 border border-danger/40 bg-danger/5">
-          <div className="flex items-start gap-2">
-            <AlertCircle size={18} className="text-danger mt-0.5 shrink-0" />
-            <div className="space-y-1 text-small">
-              <p className="text-text-primary font-medium">即将软删 {scopeLabel} 下的全部账号</p>
-              <p className="text-text-secondary">
-                忽略当前搜索过滤；操作不可在前端撤销。被软删的账号会从池中下线，但记录会保留以便事后追查。
-              </p>
-            </div>
-          </div>
-        </div>
-
-        <label className="field">
-          <span className="field-label">
-            请输入 <span className="text-danger font-semibold mx-0.5">{KEYWORD}</span> 以继续
-          </span>
-          <input
-            autoFocus
-            className={`input ${text && !ok ? 'border-danger focus:border-danger' : ''}`}
-            placeholder={KEYWORD}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && ok && !loading) {
-                e.preventDefault();
-                onConfirm();
-              }
-            }}
-          />
-          <span className="field-hint">逐字输入，区分大小写</span>
-        </label>
-
-        <div className="flex justify-end gap-2 pt-1">
-          <button type="button" className="btn btn-outline btn-md" onClick={onClose} disabled={loading}>
-            取消
-          </button>
-          <button
-            type="button"
-            className="btn btn-danger btn-md gap-1"
-            disabled={!ok || loading}
-            onClick={onConfirm}
-          >
-            <Trash2 size={14} />
-            {loading ? '删除中…' : '确认删除全部'}
-          </button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-// ============== UI helpers ==============
 function Modal({
   title,
   onClose,
@@ -1728,20 +1440,19 @@ function Modal({
 }: {
   title: string;
   onClose: () => void;
-  /** 宽屏弹层（批量导入 sub2api 表单） */
   wide?: boolean;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
-    <div className="fixed inset-0 z-[80] grid place-items-center bg-black/40 backdrop-blur-sm p-4">
+    <div className="fixed inset-0 z-[80] grid place-items-center bg-black/40 p-4 backdrop-blur-sm">
       <div className={`dialog-surface w-full ${wide ? 'max-w-2xl' : 'max-w-xl'} klein-fade-in`}>
-        <header className="flex items-center justify-between px-5 h-12 border-b border-border">
+        <header className="flex h-12 items-center justify-between border-b border-border px-5">
           <h3 className="font-semibold text-text-primary">{title}</h3>
           <button className="btn btn-ghost btn-icon btn-sm" onClick={onClose} aria-label="关闭">
-            ✕
+            ×
           </button>
         </header>
-        <div className="p-5 max-h-[70vh] overflow-y-auto">{children}</div>
+        <div className="max-h-[75vh] overflow-y-auto p-5">{children}</div>
       </div>
     </div>
   );
@@ -1750,14 +1461,16 @@ function Modal({
 function Field({
   label,
   hint,
+  className,
   children,
 }: {
   label: string;
-  hint?: React.ReactNode;
-  children: React.ReactNode;
+  hint?: ReactNode;
+  className?: string;
+  children: ReactNode;
 }) {
   return (
-    <label className="field">
+    <label className={`field ${className || ''}`}>
       <span className="field-label">{label}</span>
       {children}
       {hint && <span className="field-hint">{hint}</span>}

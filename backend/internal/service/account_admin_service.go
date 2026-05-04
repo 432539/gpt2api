@@ -4,6 +4,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -369,6 +370,7 @@ func (s *AccountAdminService) List(ctx context.Context, req *dto.AccountListReq)
 	items, total, err := s.repo.List(ctx, repo.AccountListFilter{
 		Provider: req.Provider,
 		Status:   req.Status,
+		PlanType: strings.ToLower(strings.TrimSpace(req.PlanType)),
 		Keyword:  req.Keyword,
 		Page:     req.Page,
 		PageSize: req.PageSize,
@@ -463,7 +465,14 @@ func (s *AccountAdminService) BatchImport(ctx context.Context, adminID uint64, r
 		return nil, errcode.DBError.Wrap(err)
 	}
 	s.pool.Reload(req.Provider)
-	return &dto.BatchImportResult{Imported: len(items), Skipped: 0}, nil
+	detected, failed := s.probeImportedGrokAccounts(ctx, items)
+	return &dto.BatchImportResult{
+		Imported: len(items),
+		Skipped:  0,
+		Detected: detected,
+		Pending:  maxInt(0, len(items)-detected-failed),
+		Failed:   failed,
+	}, nil
 }
 
 func (s *AccountAdminService) batchImportSub2API(ctx context.Context, adminID uint64, req *dto.AccountBatchImportReq) (*dto.BatchImportResult, error) {
@@ -591,7 +600,14 @@ func (s *AccountAdminService) batchImportSub2API(ctx context.Context, adminID ui
 	for p := range seen {
 		s.pool.Reload(p)
 	}
-	return &dto.BatchImportResult{Imported: len(items), Skipped: skipped}, nil
+	detected, failed := s.probeImportedGrokAccounts(ctx, items)
+	return &dto.BatchImportResult{
+		Imported: len(items),
+		Skipped:  skipped,
+		Detected: detected,
+		Pending:  maxInt(0, len(items)-detected-failed),
+		Failed:   failed,
+	}, nil
 }
 
 func mapSub2APIPlatform(p string) string {
@@ -781,6 +797,58 @@ func (s *AccountAdminService) BatchProbeQuota(ctx context.Context, provider stri
 	}, nil
 }
 
+// BatchAssignProxy 批量设置账号代理。
+func (s *AccountAdminService) BatchAssignProxy(ctx context.Context, req *dto.AccountBatchAssignProxyReq) (*dto.AccountBatchAssignProxyResp, error) {
+	if len(req.AccountIDs) == 0 {
+		return nil, errcode.InvalidParam.WithMsg("account_ids 不能为空")
+	}
+	switch req.Mode {
+	case "single":
+		if req.ProxyID == nil {
+			return nil, errcode.InvalidParam.WithMsg("single 模式需要 proxy_id")
+		}
+	case "cycle":
+		if len(req.ProxyIDs) == 0 {
+			return nil, errcode.InvalidParam.WithMsg("cycle 模式需要 proxy_ids")
+		}
+	default:
+		return nil, errcode.InvalidParam.WithMsg("mode 仅支持 single / cycle")
+	}
+
+	updated := 0
+	seenProvider := map[string]struct{}{}
+	for idx, accountID := range req.AccountIDs {
+		acc, err := s.repo.GetByID(ctx, accountID)
+		if err != nil {
+			return nil, errcode.ResourceMissing.WithMsg(fmt.Sprintf("账号 %d 不存在", accountID))
+		}
+		var proxyValue any
+		if req.Mode == "single" {
+			if req.ProxyID != nil && *req.ProxyID > 0 {
+				proxyValue = *req.ProxyID
+			} else {
+				proxyValue = nil
+			}
+		} else {
+			pid := req.ProxyIDs[idx%len(req.ProxyIDs)]
+			if pid > 0 {
+				proxyValue = pid
+			} else {
+				proxyValue = nil
+			}
+		}
+		if err := s.repo.Update(ctx, acc.ID, map[string]any{"proxy_id": proxyValue}); err != nil {
+			return nil, errcode.DBError.Wrap(err)
+		}
+		seenProvider[acc.Provider] = struct{}{}
+		updated++
+	}
+	for provider := range seenProvider {
+		s.pool.Reload(provider)
+	}
+	return &dto.AccountBatchAssignProxyResp{Updated: updated}, nil
+}
+
 func accountSupportsQuotaProbe(a *model.Account) bool {
 	if a == nil {
 		return false
@@ -793,6 +861,51 @@ func accountSupportsQuotaProbe(a *model.Account) bool {
 	default:
 		return false
 	}
+}
+
+func (s *AccountAdminService) probeImportedGrokAccounts(ctx context.Context, items []*model.Account) (int, int) {
+	if s.testSvc == nil || len(items) == 0 {
+		return 0, 0
+	}
+	detected := 0
+	failed := 0
+	var mu sync.Mutex
+	sem := make(chan struct{}, 4)
+	var wg sync.WaitGroup
+	for _, item := range items {
+		if item == nil || item.Provider != model.ProviderGROK || item.AuthType != model.AuthTypeCookie {
+			continue
+		}
+		acc := item
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				mu.Lock()
+				failed++
+				mu.Unlock()
+				return
+			}
+			defer func() { <-sem }()
+			res, err := s.testSvc.Test(ctx, acc)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil || res == nil || !res.OK {
+				failed++
+				return
+			}
+			if strings.TrimSpace(res.PlanType) != "" {
+				detected++
+			}
+		}()
+	}
+	wg.Wait()
+	if detected > 0 || failed > 0 {
+		s.pool.Reload(model.ProviderGROK)
+	}
+	return detected, failed
 }
 
 // === helpers ===
@@ -967,3 +1080,10 @@ func int64FromMeta(meta map[string]any, key string) int64 {
 }
 
 func strPtr(s string) *string { return &s }
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}

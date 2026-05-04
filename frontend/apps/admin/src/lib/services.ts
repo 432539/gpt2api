@@ -3,6 +3,8 @@ import { request } from './api';
 import type {
   AccountBatchImportBody,
   AccountBatchImportResult,
+  AccountBatchAssignProxyBody,
+  AccountBatchAssignProxyResp,
   AccountBatchRefreshResp,
   AccountBulkOpResult,
   AccountCreateBody,
@@ -31,7 +33,10 @@ import type {
   PageData,
   PoolStatsResp,
   ProxyCreateBody,
+  ProxyBatchImportBody,
+  ProxyBatchImportResult,
   ProxyItem,
+  ProxyBatchTestResp,
   ProxyTestResp,
   ProxyUpdateBody,
   SystemSettings,
@@ -124,6 +129,7 @@ export const promoApi = {
 export interface AccountListQuery {
   provider?: 'gpt' | 'grok';
   status?: -1 | 0 | 1 | 2;
+  plan_type?: 'basic' | 'super' | 'heavy';
   keyword?: string;
   page?: number;
   page_size?: number;
@@ -186,6 +192,12 @@ export const accountsApi = {
       method: 'POST',
       data: body,
     }),
+  batchAssignProxy: (body: AccountBatchAssignProxyBody) =>
+    request<AccountBatchAssignProxyResp>({
+      url: '/accounts/batch-assign-proxy',
+      method: 'POST',
+      data: body,
+    }),
 };
 
 export const cdkApi = {
@@ -211,12 +223,18 @@ export const proxiesApi = {
     request<PageData<ProxyItem>>({ url: '/proxies', method: 'GET', params: q }),
   create: (body: ProxyCreateBody) =>
     request<{ id: number }>({ url: '/proxies', method: 'POST', data: body }),
+  batchImport: (body: ProxyBatchImportBody) =>
+    request<ProxyBatchImportResult>({ url: '/proxies/import', method: 'POST', data: body }),
   update: (id: number, body: ProxyUpdateBody) =>
     request<void>({ url: `/proxies/${id}`, method: 'PUT', data: body }),
   remove: (id: number) =>
     request<void>({ url: `/proxies/${id}`, method: 'DELETE' }),
+  batchDelete: (ids: number[]) =>
+    request<{ deleted: number }>({ url: '/proxies/batch-delete', method: 'POST', data: { ids } }),
   test: (id: number) =>
     request<ProxyTestResp>({ url: `/proxies/${id}/test`, method: 'POST' }),
+  batchTest: (ids: number[]) =>
+    request<ProxyBatchTestResp>({ url: '/proxies/batch-test', method: 'POST', data: { ids } }),
 };
 
 // ==================== 系统配置 ====================

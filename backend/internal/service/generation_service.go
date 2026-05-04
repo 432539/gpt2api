@@ -750,16 +750,19 @@ func (s *GenerationService) resolveProxyURL(ctx context.Context, acc *model.Acco
 	if s.proxySvc == nil || s.cfg == nil {
 		return "", nil
 	}
-	pid := uint64(0)
+	var (
+		p   *model.Proxy
+		err error
+	)
 	if acc != nil && acc.ProxyID != nil {
-		pid = *acc.ProxyID
+		p, err = s.proxySvc.GetByID(ctx, *acc.ProxyID)
 	} else if s.cfg.GlobalProxyEnabled(ctx) {
-		pid = s.cfg.GlobalProxyID(ctx)
+		if s.cfg.GlobalProxySelectionMode(ctx) == "random" {
+			p, err = s.proxySvc.PickEnabledRandom(ctx)
+		} else {
+			p, err = s.proxySvc.GetByID(ctx, s.cfg.GlobalProxyID(ctx))
+		}
 	}
-	if pid == 0 {
-		return "", nil
-	}
-	p, err := s.proxySvc.GetByID(ctx, pid)
 	if err != nil || p == nil || p.Status != model.ProxyStatusEnabled {
 		return "", err
 	}

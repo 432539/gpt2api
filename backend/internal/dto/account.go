@@ -83,6 +83,9 @@ type Sub2APIAccountItem struct {
 type BatchImportResult struct {
 	Imported int `json:"imported"`
 	Skipped  int `json:"skipped"`
+	Detected int `json:"detected,omitempty"`
+	Pending  int `json:"pending,omitempty"`
+	Failed   int `json:"failed,omitempty"`
 }
 
 // Sub2APICreds sub2api credentials 对象。
@@ -143,6 +146,7 @@ type AccountBatchRefreshResp struct {
 type AccountListReq struct {
 	Provider string `form:"provider"  binding:"omitempty,oneof=gpt grok"`
 	Status   *int8  `form:"status"`
+	PlanType string `form:"plan_type" binding:"omitempty,oneof=basic super heavy"`
 	Keyword  string `form:"keyword"   binding:"omitempty,max=64"`
 	Page     int    `form:"page"      binding:"omitempty,min=1"`
 	PageSize int    `form:"page_size" binding:"omitempty,min=1,max=1000"`
@@ -203,6 +207,19 @@ type AccountPurgeReq struct {
 // AccountBulkOpResult 批量删除结果。
 type AccountBulkOpResult struct {
 	Deleted int64 `json:"deleted"`
+}
+
+// AccountBatchAssignProxyReq 批量设置账号代理。
+type AccountBatchAssignProxyReq struct {
+	Mode       string   `json:"mode"        binding:"required,oneof=single cycle"`
+	AccountIDs []uint64 `json:"account_ids" binding:"required,min=1,max=2000,dive,min=1"`
+	ProxyID    *uint64  `json:"proxy_id"`
+	ProxyIDs   []uint64 `json:"proxy_ids"`
+}
+
+// AccountBatchAssignProxyResp 批量设置账号代理结果。
+type AccountBatchAssignProxyResp struct {
+	Updated int `json:"updated"`
 }
 
 // AccountSecretsResp 仅管理员可见，返回单个账号的明文凭证。

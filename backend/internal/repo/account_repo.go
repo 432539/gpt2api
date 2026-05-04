@@ -44,6 +44,7 @@ func (r *AccountRepo) GetByID(ctx context.Context, id uint64) (*model.Account, e
 type AccountListFilter struct {
 	Provider string
 	Status   *int8
+	PlanType string
 	Keyword  string
 	Page     int
 	PageSize int
@@ -63,6 +64,9 @@ func (r *AccountRepo) List(ctx context.Context, f AccountListFilter) ([]*model.A
 	}
 	if f.Status != nil {
 		q = q.Where("status = ?", *f.Status)
+	}
+	if f.PlanType != "" {
+		q = q.Where("LOWER(JSON_UNQUOTE(JSON_EXTRACT(oauth_meta, '$.plan_type'))) = ?", f.PlanType)
 	}
 	if f.Keyword != "" {
 		k := "%" + f.Keyword + "%"

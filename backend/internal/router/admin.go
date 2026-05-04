@@ -101,6 +101,7 @@ func MountAdmin(r *gin.Engine, deps *bootstrap.Deps) *service.AccountPool {
 			acc.POST("", accountH.Create)
 			acc.POST("/import", accountH.BatchImport)
 			acc.POST("/batch-delete", accountH.BatchDelete)
+			acc.POST("/batch-assign-proxy", accountH.BatchAssignProxy)
 			acc.POST("/purge", accountH.Purge)
 			acc.POST("/batch-refresh", accountH.BatchRefresh)
 			acc.POST("/batch-probe", accountH.BatchProbeQuota)
@@ -117,6 +118,9 @@ func MountAdmin(r *gin.Engine, deps *bootstrap.Deps) *service.AccountPool {
 		{
 			proxies.GET("", proxyH.List)
 			proxies.POST("", proxyH.Create)
+			proxies.POST("/import", proxyH.BatchImport)
+			proxies.POST("/batch-delete", proxyH.BatchDelete)
+			proxies.POST("/batch-test", proxyH.BatchTest)
 			proxies.PUT("/:id", proxyH.Update)
 			proxies.DELETE("/:id", proxyH.Delete)
 			proxies.POST("/:id/test", proxyH.Test)

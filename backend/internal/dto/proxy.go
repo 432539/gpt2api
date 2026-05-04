@@ -56,3 +56,39 @@ type ProxyTestResp struct {
 	LatencyMs int    `json:"latency_ms"`
 	Error     string `json:"error,omitempty"`
 }
+
+// ProxyBatchImportReq 批量导入代理。
+type ProxyBatchImportReq struct {
+	Text string `json:"text" binding:"required"`
+}
+
+// ProxyBatchDeleteReq 按 ID 批量删除代理。
+type ProxyBatchDeleteReq struct {
+	IDs []uint64 `json:"ids" binding:"required,min=1,max=2000,dive,min=1"`
+}
+
+// ProxyBatchTestReq 按 ID 批量测试代理。
+type ProxyBatchTestReq struct {
+	IDs []uint64 `json:"ids" binding:"required,min=1,max=2000,dive,min=1"`
+}
+
+// ProxyBatchImportResult 批量导入结果。
+type ProxyBatchImportResult struct {
+	Created int      `json:"created"`
+	Skipped int      `json:"skipped"`
+	Failed  int      `json:"failed"`
+	Errors  []string `json:"errors,omitempty"`
+}
+
+// ProxyBatchTestResult 批量测试结果。
+type ProxyBatchTestResult struct {
+	Tested int      `json:"tested"`
+	OK     int      `json:"ok"`
+	Failed int      `json:"failed"`
+	IDs    []uint64 `json:"ids,omitempty"`
+}
+
+// ProxyBatchDeleteResult 批量删除结果。
+type ProxyBatchDeleteResult struct {
+	Deleted int64 `json:"deleted"`
+}

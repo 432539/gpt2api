@@ -54,9 +54,9 @@ const (
 	grokUA                 = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 	imageMediaType         = "MEDIA_POST_TYPE_IMAGE"
 	videoMediaType         = "MEDIA_POST_TYPE_VIDEO"
-	defaultVideoSize       = "1280x720"
+	defaultVideoSize       = "1920x1080"
 	defaultVideoMode       = "custom"
-	defaultVideoResolution = "480p"
+	defaultVideoResolution = "1080p"
 )
 
 type chatModelParams struct {
@@ -311,7 +311,7 @@ func (c *WebClient) GenerateVideo(ctx context.Context, token string, req VideoRe
 	if req.Size == "" && strings.TrimSpace(req.AspectRatio) == "" {
 		req.Size = defaultVideoSize
 	}
-	aspect, resolution, width, height := videoConfig(req.Size, req.AspectRatio)
+	aspect, resolution, width, height := videoConfig(req.Size, req.AspectRatio, req.Quality)
 	c.logUpstream(ctx, provider.UpstreamLogEntry{
 		Provider: "grok",
 		Stage:    "video.start",
@@ -1444,24 +1444,45 @@ func normalizeVideoDuration(sec int) int {
 	return 10
 }
 
-func videoConfig(size, aspect string) (string, string, int, int) {
-	switch strings.TrimSpace(aspect) {
+func videoConfig(size, aspect, quality string) (string, string, int, int) {
+	aspect = strings.TrimSpace(aspect)
+	if aspect == "" {
+		switch size {
+		case "720x1280", "1024x1792", "1080x1920":
+			aspect = "9:16"
+		case "720x720", "1024x1024", "1080x1080":
+			aspect = "1:1"
+		case "1280x720", "1792x1024", "1920x1080":
+			aspect = "16:9"
+		default:
+			aspect = "16:9"
+		}
+	}
+	quality = strings.ToLower(strings.TrimSpace(quality))
+	resolution := defaultVideoResolution
+	if quality == "standard" || quality == "draft" {
+		resolution = "720p"
+	}
+	if quality == "hd" {
+		resolution = "1080p"
+	}
+	switch aspect {
 	case "9:16":
-		return "9:16", defaultVideoResolution, 720, 1280
+		if resolution == "720p" {
+			return "9:16", resolution, 720, 1280
+		}
+		return "9:16", resolution, 1080, 1920
 	case "1:1":
-		return "1:1", defaultVideoResolution, 1024, 1024
-	case "16:9":
-		return "16:9", defaultVideoResolution, 1280, 720
+		if resolution == "720p" {
+			return "1:1", resolution, 720, 720
+		}
+		return "1:1", resolution, 1080, 1080
+	default:
+		if resolution == "720p" {
+			return "16:9", resolution, 1280, 720
+		}
+		return "16:9", resolution, 1920, 1080
 	}
-	switch size {
-	case "720x1280", "1024x1792":
-		return "9:16", defaultVideoResolution, 720, 1280
-	case "1024x1024":
-		return "1:1", defaultVideoResolution, 1024, 1024
-	case "1280x720", "1792x1024":
-		return "16:9", defaultVideoResolution, 1280, 720
-	}
-	return "16:9", defaultVideoResolution, 1280, 720
 }
 
 func shortID() string {

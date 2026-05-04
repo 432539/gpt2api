@@ -108,16 +108,19 @@ func NewAccountTestService(
 }
 
 func (s *AccountTestService) resolveProxyURL(ctx context.Context, account *model.Account) (string, error) {
-	pid := uint64(0)
+	var (
+		p   *model.Proxy
+		err error
+	)
 	if account.ProxyID != nil {
-		pid = *account.ProxyID
+		p, err = s.proxySvc.GetByID(ctx, *account.ProxyID)
 	} else if s.cfgSvc.GlobalProxyEnabled(ctx) {
-		pid = s.cfgSvc.GlobalProxyID(ctx)
+		if s.cfgSvc.GlobalProxySelectionMode(ctx) == "random" {
+			p, err = s.proxySvc.PickEnabledRandom(ctx)
+		} else {
+			p, err = s.proxySvc.GetByID(ctx, s.cfgSvc.GlobalProxyID(ctx))
+		}
 	}
-	if pid == 0 {
-		return "", nil
-	}
-	p, err := s.proxySvc.GetByID(ctx, pid)
 	if err != nil {
 		return "", err
 	}

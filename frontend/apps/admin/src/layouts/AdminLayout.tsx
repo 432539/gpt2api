@@ -1,11 +1,10 @@
-import { FormEvent, useState } from 'react';
+import { type FormEvent, useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import {
   BadgeDollarSign,
   ChevronDown,
   FileText,
   Globe2,
-  Github,
   KeyRound,
   LayoutDashboard,
   LockKeyhole,
@@ -28,11 +27,7 @@ import { authApi } from '../lib/services';
 import { useAuthStore } from '../stores/auth';
 import { toast } from '../stores/toast';
 
-const APP_VERSION = 'v2.0.0';
-const SOURCE_HREF = String.fromCharCode(
-  104, 116, 116, 112, 115, 58, 47, 47, 103, 105, 116, 104, 117, 98, 46, 99,
-  111, 109, 47, 52, 51, 50, 53, 51, 57, 47, 103, 112, 116, 50, 97, 112, 105,
-);
+const APP_VERSION = 'v2.0.1';
 
 const NAV = [
   { to: '/dashboard', label: '仪表盘', icon: LayoutDashboard },
@@ -47,7 +42,7 @@ const NAV = [
   { to: '/recharge-packages', label: '充值套餐', icon: WalletCards },
   { to: '/model-prices', label: '模型价格', icon: BadgeDollarSign },
   { to: '/logs', label: '请求日志', icon: FileText },
-];
+] as const;
 
 export function AdminLayout() {
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -55,12 +50,12 @@ export function AdminLayout() {
   const [passwordOpen, setPasswordOpen] = useState(false);
   const me = useAuthStore((s) => s.me);
   const logout = useAuthStore((s) => s.logout);
-  const nav = useNavigate();
+  const navigate = useNavigate();
 
   const handleLogout = () => {
     logout();
     toast.info('已退出登录');
-    nav('/login', { replace: true });
+    navigate('/login', { replace: true });
   };
 
   const displayName = me?.nickname || me?.username || '管理员';
@@ -111,17 +106,8 @@ export function AdminLayout() {
         </nav>
         <div className="border-t border-border px-4 py-4 text-tiny text-text-tertiary">
           <div className="flex items-center gap-2">
-            <span>{APP_VERSION}</span>
-            <a
-              href={SOURCE_HREF}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1 rounded-full px-2 py-1 transition hover:bg-surface-2 hover:text-text-primary"
-              title="开源地址"
-            >
-              <Github size={12} />
-              <span>开源地址</span>
-            </a>
+            <span>内部版本</span>
+            <span className="text-text-secondary">{APP_VERSION}</span>
           </div>
         </div>
       </aside>
@@ -250,7 +236,7 @@ function PasswordDialog({ onClose }: { onClose: () => void }) {
         <div className="mb-5 flex items-center justify-between">
           <div>
             <h2 className="text-h3 text-text-primary">修改密码</h2>
-            <p className="mt-1 text-small text-text-tertiary">建议修改默认 admin123 密码。</p>
+            <p className="mt-1 text-small text-text-tertiary">建议及时修改默认管理员密码。</p>
           </div>
           <button className="btn btn-ghost btn-icon btn-sm" type="button" onClick={onClose}>
             <X size={18} />
@@ -271,9 +257,11 @@ function PasswordDialog({ onClose }: { onClose: () => void }) {
           </label>
         </div>
         <div className="mt-6 flex justify-end gap-2">
-          <button className="btn btn-outline btn-md" type="button" onClick={onClose}>取消</button>
+          <button className="btn btn-outline btn-md" type="button" onClick={onClose}>
+            取消
+          </button>
           <button className="btn btn-primary btn-md" type="submit" disabled={saving}>
-            {saving ? '保存中...' : '保存修改'}
+            {saving ? '保存中…' : '保存修改'}
           </button>
         </div>
       </form>

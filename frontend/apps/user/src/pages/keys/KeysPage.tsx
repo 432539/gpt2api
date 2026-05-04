@@ -63,7 +63,7 @@ export default function KeysPage() {
       <header className="page-header">
         <div>
           <h1 className="page-title">API KEY 管理</h1>
-          <p className="page-subtitle">通过 OpenAI 兼容协议直接调用 gpt2api（仅创建时返回明文，请妥善保存）。</p>
+          <p className="page-subtitle">通过 OpenAI 兼容协议直接调用当前服务（仅创建时返回明文，请妥善保存）。</p>
         </div>
         <button className="btn btn-primary btn-lg" onClick={() => setShowCreate(true)}>
           <Plus size={18} /> 创建 KEY

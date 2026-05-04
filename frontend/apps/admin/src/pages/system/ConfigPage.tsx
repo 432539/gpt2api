@@ -14,6 +14,7 @@ interface FormState {
   tolerance_circuit_failures: number;
   tolerance_circuit_cooldown_seconds: number;
   proxy_global_enabled: boolean;
+  proxy_selection_mode: 'fixed' | 'random';
   proxy_global_id: number;
   oauth_refresh_before_hours: number;
   storage_history_retention_days: number;
@@ -44,6 +45,7 @@ const DEFAULT_FORM: FormState = {
   tolerance_circuit_failures: 3,
   tolerance_circuit_cooldown_seconds: 300,
   proxy_global_enabled: false,
+  proxy_selection_mode: 'fixed',
   proxy_global_id: 0,
   oauth_refresh_before_hours: 6,
   storage_history_retention_days: 180,
@@ -83,6 +85,7 @@ function fromSettings(s: SystemSettings | undefined): FormState {
     tolerance_circuit_failures: asNum(s['tolerance.circuit_failures'], 3),
     tolerance_circuit_cooldown_seconds: asNum(s['tolerance.circuit_cooldown_seconds'], 300),
     proxy_global_enabled: asBool(s['proxy.global_enabled']),
+    proxy_selection_mode: asStr(s['proxy.selection_mode'], 'fixed') === 'random' ? 'random' : 'fixed',
     proxy_global_id: asNum(s['proxy.global_id'], 0),
     oauth_refresh_before_hours: asNum(s['oauth.refresh_before_hours'], 6),
     storage_history_retention_days: asNum(s['storage.history_retention_days'], 180),
@@ -115,6 +118,7 @@ function toPayload(f: FormState): Partial<SystemSettings> {
     'tolerance.circuit_failures': Number(f.tolerance_circuit_failures) || 0,
     'tolerance.circuit_cooldown_seconds': Number(f.tolerance_circuit_cooldown_seconds) || 0,
     'proxy.global_enabled': f.proxy_global_enabled,
+    'proxy.selection_mode': f.proxy_selection_mode,
     'proxy.global_id': Number(f.proxy_global_id) || 0,
     'oauth.refresh_before_hours': Number(f.oauth_refresh_before_hours) || 6,
     'storage.history_retention_days': Number(f.storage_history_retention_days) || 0,
@@ -214,12 +218,33 @@ export default function ConfigPage() {
 
           <Section icon={<Database size={18} />} title="刷新与存储" desc="控制 OAuth 刷新窗口、全局代理和生成历史保留周期。">
             <Toggle label="启用全局代理" checked={form.proxy_global_enabled} onChange={(v) => set('proxy_global_enabled', v)} />
+            <Field label="全局代理模式">
+              <select
+                className="select"
+                value={form.proxy_selection_mode}
+                onChange={(e) => set('proxy_selection_mode', e.target.value === 'random' ? 'random' : 'fixed')}
+                disabled={!form.proxy_global_enabled}
+              >
+                <option value="fixed">固定代理</option>
+                <option value="random">随机代理池</option>
+              </select>
+            </Field>
             <Field label="全局默认代理">
-              <select className="select" value={form.proxy_global_id} onChange={(e) => set('proxy_global_id', Number(e.target.value) || 0)} disabled={!form.proxy_global_enabled}>
+              <select
+                className="select"
+                value={form.proxy_global_id}
+                onChange={(e) => set('proxy_global_id', Number(e.target.value) || 0)}
+                disabled={!form.proxy_global_enabled || form.proxy_selection_mode === 'random'}
+              >
                 <option value={0}>不指定</option>
                 {proxyOptions.map((p) => <option key={p.id} value={p.id}>[{p.protocol}] {p.name} - {p.host}:{p.port}</option>)}
               </select>
             </Field>
+            {form.proxy_global_enabled && form.proxy_selection_mode === 'random' && (
+              <div className="rounded-md border border-border bg-surface-2 p-3 text-small text-text-tertiary">
+                每次任务启动时，会从当前已启用代理中随机挑选一个；账号单独绑定的代理仍然优先。
+              </div>
+            )}
             <NumberField label="OAuth 提前刷新窗口（小时）" value={form.oauth_refresh_before_hours} min={1} max={48} onChange={(v) => set('oauth_refresh_before_hours', v)} />
             <NumberField label="生成历史保留（天）" value={form.storage_history_retention_days} min={0} onChange={(v) => set('storage_history_retention_days', v)} />
             <NumberField label="生成结果文件保留（天）" value={form.storage_result_retention_days} min={0} onChange={(v) => set('storage_result_retention_days', v)} />

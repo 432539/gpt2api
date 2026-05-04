@@ -17,6 +17,7 @@ import (
 const (
 	SettingProxyGlobalEnabled  = "proxy.global_enabled"
 	SettingProxyGlobalID       = "proxy.global_id"
+	SettingProxySelectionMode  = "proxy.selection_mode"
 	SettingOAuthRefreshHours   = "oauth.refresh_before_hours"
 	SettingOAuthOpenAIClientID = "oauth.openai_client_id"
 	SettingOAuthOpenAITokenURL = "oauth.openai_token_url"
@@ -167,6 +168,17 @@ func (s *SystemConfigService) GlobalProxyEnabled(ctx context.Context) bool {
 // GlobalProxyID 全局默认代理 ID（0 = 无）。
 func (s *SystemConfigService) GlobalProxyID(ctx context.Context) uint64 {
 	return s.GetUint64(ctx, SettingProxyGlobalID, 0)
+}
+
+// GlobalProxySelectionMode 全局代理选择模式：fixed / random。
+func (s *SystemConfigService) GlobalProxySelectionMode(ctx context.Context) string {
+	mode := strings.ToLower(strings.TrimSpace(s.GetString(ctx, SettingProxySelectionMode, "fixed")))
+	switch mode {
+	case "random":
+		return "random"
+	default:
+		return "fixed"
+	}
 }
 
 // RefreshBeforeHours OAuth 提前刷新窗口（小时）。

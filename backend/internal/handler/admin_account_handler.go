@@ -154,6 +154,21 @@ func (h *AdminAccountHandler) BatchDelete(c *gin.Context) {
 	response.OK(c, dto.AccountBulkOpResult{Deleted: n})
 }
 
+// BatchAssignProxy POST /admin/api/v1/accounts/batch-assign-proxy
+func (h *AdminAccountHandler) BatchAssignProxy(c *gin.Context) {
+	var req dto.AccountBatchAssignProxyReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Fail(c, errcode.InvalidParam.Wrap(err))
+		return
+	}
+	res, err := h.svc.BatchAssignProxy(c.Request.Context(), &req)
+	if err != nil {
+		response.Fail(c, err)
+		return
+	}
+	response.OK(c, res)
+}
+
 // Purge POST /admin/api/v1/accounts/purge
 func (h *AdminAccountHandler) Purge(c *gin.Context) {
 	var req dto.AccountPurgeReq

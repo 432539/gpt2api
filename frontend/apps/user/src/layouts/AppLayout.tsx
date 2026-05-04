@@ -1,3 +1,4 @@
+import type { MouseEvent } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import {
   BookOpen,
@@ -5,7 +6,6 @@ import {
   CreditCard,
   FileKey2,
   Gift,
-  Github,
   Image,
   LogIn,
   LogOut,
@@ -29,6 +29,8 @@ interface NavItem {
   authed?: boolean;
 }
 
+const APP_VERSION = 'v2.0.1';
+
 const NAV_ITEMS: NavItem[] = [
   { to: '/create/image', label: '图片', icon: Image },
   { to: '/create/text', label: '文字', icon: MessageCircle },
@@ -40,12 +42,6 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/invite', label: '邀请', icon: Gift, authed: true },
   { to: '/settings', label: '设置', icon: Settings, authed: true },
 ];
-
-const sourceHref = () => String.fromCharCode(
-  104, 116, 116, 112, 115, 58, 47, 47, 103, 105, 116, 104, 117, 98, 46, 99,
-  111, 109, 47, 52, 51, 50, 53, 51, 57, 47, 103, 112, 116, 50, 97, 112, 105, 47,
-);
-const APP_VERSION = 'v2.0.0';
 
 export function AppLayout() {
   const token = useAuthStore((s) => s.token);
@@ -61,10 +57,10 @@ export function AppLayout() {
     navigate('/create/image', { replace: true });
   };
 
-  const handleNav = (item: NavItem, e: React.MouseEvent) => {
+  const handleNav = (item: NavItem, e: MouseEvent) => {
     if (item.authed && !isAuthed) {
       e.preventDefault();
-      openGate({ hint: `登录后即可使用「${item.label}」`, onLoggedIn: () => navigate(item.to) });
+      openGate({ hint: `登录后即可使用“${item.label}”`, onLoggedIn: () => navigate(item.to) });
     }
   };
 
@@ -88,15 +84,6 @@ export function AppLayout() {
 
         <div className="mb-3 flex flex-col items-center gap-2">
           {NAV_ITEMS.slice(7).map((item) => <RailLink key={item.to} item={item} onClick={handleNav} />)}
-          <a
-            href={sourceHref()}
-            target="_blank"
-            rel="noreferrer"
-            className="grid h-8 w-8 place-items-center rounded-full text-neutral-600 hover:bg-neutral-100 hover:text-neutral-950"
-            title="开源项目"
-          >
-            <Github size={17} />
-          </a>
           {isAuthed ? (
             <>
               <button
@@ -129,15 +116,6 @@ export function AppLayout() {
         </div>
         <div className="mb-2 flex flex-col items-center gap-1 text-[11px] text-neutral-400">
           <span>{APP_VERSION}</span>
-          <a
-            href={sourceHref()}
-            target="_blank"
-            rel="noreferrer"
-            className="grid h-8 w-8 place-items-center rounded-full text-neutral-600 hover:bg-neutral-100 hover:text-neutral-950"
-            title="开源地址"
-          >
-            <Github size={17} />
-          </a>
         </div>
       </aside>
 
@@ -151,15 +129,6 @@ export function AppLayout() {
         <button className="grid h-9 w-9 place-items-center rounded-full hover:bg-neutral-100" onClick={() => navigate('/history')}>
           <Search size={18} />
         </button>
-        <a
-          href={sourceHref()}
-          target="_blank"
-          rel="noreferrer"
-          className="grid h-9 w-9 place-items-center rounded-full hover:bg-neutral-100"
-          title="开源项目"
-        >
-          <Github size={18} />
-        </a>
       </header>
 
       <main className="min-h-screen lg:pl-14">
@@ -169,7 +138,7 @@ export function AppLayout() {
   );
 }
 
-function RailLink({ item, onClick }: { item: NavItem; onClick: (item: NavItem, e: React.MouseEvent) => void }) {
+function RailLink({ item, onClick }: { item: NavItem; onClick: (item: NavItem, e: MouseEvent) => void }) {
   const Icon = item.icon;
   return (
     <NavLink
@@ -188,7 +157,7 @@ function RailLink({ item, onClick }: { item: NavItem; onClick: (item: NavItem, e
   );
 }
 
-function MobileMode({ item, onClick }: { item: NavItem; onClick: (item: NavItem, e: React.MouseEvent) => void }) {
+function MobileMode({ item, onClick }: { item: NavItem; onClick: (item: NavItem, e: MouseEvent) => void }) {
   const Icon = item.icon;
   return (
     <NavLink

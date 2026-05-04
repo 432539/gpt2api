@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	crand "crypto/rand"
 	"fmt"
 	"net/url"
+	"math/big"
 	"strconv"
 	"strings"
 	"sync"
@@ -147,6 +149,15 @@ func (s *ProxyService) List(ctx context.Context, req *dto.ProxyListReq) ([]*dto.
 	return resp, total, nil
 }
 
+// ListEnabled 获取全部启用代理。
+func (s *ProxyService) ListEnabled(ctx context.Context) ([]*model.Proxy, error) {
+	items, err := s.repo.ListEnabled(ctx)
+	if err != nil {
+		return nil, errcode.DBError.Wrap(err)
+	}
+	return items, nil
+}
+
 // GetByID 获取（用于其它服务）。
 func (s *ProxyService) GetByID(ctx context.Context, id uint64) (*model.Proxy, error) {
 	if id == 0 {
@@ -212,6 +223,74 @@ func (s *ProxyService) MarkCheck(ctx context.Context, id uint64, ok bool, latenc
 	return nil
 }
 
+// BatchDelete 批量删除代理。
+func (s *ProxyService) BatchDelete(ctx context.Context, ids []uint64) (int64, error) {
+	n, err := s.repo.SoftDeleteMany(ctx, ids)
+	if err != nil {
+		return 0, errcode.DBError.Wrap(err)
+	}
+	if n > 0 {
+		s.invalidate()
+	}
+	return n, nil
+}
+
+// ImportText 批量导入代理，每行一个 URI，可追加 #名称。
+func (s *ProxyService) ImportText(ctx context.Context, adminID uint64, text string) (*dto.ProxyBatchImportResult, error) {
+	lines := strings.Split(text, "\n")
+	items := make([]*model.Proxy, 0, len(lines))
+	errs := make([]string, 0)
+	skipped := 0
+	created := 0
+	for idx, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			skipped++
+			continue
+		}
+		item, err := s.parseProxyLine(adminID, line)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("line %d: %v", idx+1, err))
+			continue
+		}
+		items = append(items, item)
+	}
+	for _, item := range items {
+		if err := s.repo.Create(ctx, item); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", item.Name, err))
+			continue
+		}
+		created++
+	}
+	s.invalidate()
+	failed := len(errs)
+	if len(errs) > 20 {
+		errs = errs[:20]
+	}
+	return &dto.ProxyBatchImportResult{
+		Created: created,
+		Skipped: skipped,
+		Failed:  failed,
+		Errors:  errs,
+	}, nil
+}
+
+// PickEnabledRandom 随机选择一个启用代理。
+func (s *ProxyService) PickEnabledRandom(ctx context.Context) (*model.Proxy, error) {
+	items, err := s.repo.ListEnabled(ctx)
+	if err != nil {
+		return nil, errcode.DBError.Wrap(err)
+	}
+	if len(items) == 0 {
+		return nil, nil
+	}
+	n, err := crand.Int(crand.Reader, big.NewInt(int64(len(items))))
+	if err != nil {
+		return nil, errcode.Internal.Wrap(err)
+	}
+	return items[int(n.Int64())], nil
+}
+
 // invalidate 简易缓存失效。
 func (s *ProxyService) invalidate() {
 	s.mu.Lock()
@@ -231,6 +310,55 @@ func validateProtocol(proto string) error {
 	default:
 		return errcode.InvalidParam.WithMsg(fmt.Sprintf("不支持的协议: %s", proto))
 	}
+}
+
+func (s *ProxyService) parseProxyLine(adminID uint64, line string) (*model.Proxy, error) {
+	name := ""
+	if hash := strings.LastIndex(line, "#"); hash >= 0 {
+		name = strings.TrimSpace(line[hash+1:])
+		line = strings.TrimSpace(line[:hash])
+	}
+	u, err := url.Parse(strings.TrimSpace(line))
+	if err != nil {
+		return nil, err
+	}
+	if err := validateProtocol(u.Scheme); err != nil {
+		return nil, err
+	}
+	host := strings.TrimSpace(u.Hostname())
+	if host == "" {
+		return nil, fmt.Errorf("missing host")
+	}
+	portStr := u.Port()
+	if portStr == "" {
+		return nil, fmt.Errorf("missing port")
+	}
+	portN, err := strconv.Atoi(portStr)
+	if err != nil || portN <= 0 || portN > 65535 {
+		return nil, fmt.Errorf("invalid port")
+	}
+	if name == "" {
+		name = host + ":" + portStr
+	}
+	p := &model.Proxy{
+		Name:      name,
+		Protocol:  strings.ToLower(strings.TrimSpace(u.Scheme)),
+		Host:      host,
+		Port:      uint16(portN),
+		Status:    model.ProxyStatusEnabled,
+		CreatedBy: &adminID,
+	}
+	if user := u.User.Username(); user != "" {
+		p.Username = &user
+	}
+	if pass, ok := u.User.Password(); ok && pass != "" {
+		enc, err := s.aes.Encrypt([]byte(pass))
+		if err != nil {
+			return nil, errcode.Internal.Wrap(err)
+		}
+		p.PasswordEnc = enc
+	}
+	return p, nil
 }
 
 func proxyToResp(p *model.Proxy) *dto.ProxyResp {
