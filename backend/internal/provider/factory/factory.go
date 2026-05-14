@@ -19,11 +19,18 @@ import (
 	"github.com/kleinai/backend/internal/provider/mock"
 )
 
+const (
+	astraflowBaseURL   = "https://api-us-ca.umodelverse.ai/v1"
+	astraflowCNBaseURL = "https://api.modelverse.cn/v1"
+)
+
 // Build 根据环境变量构造 provider 集。
 func Build() map[string]provider.Provider {
 	return map[string]provider.Provider{
-		"gpt":  buildGPT(),
-		"grok": buildGrok(),
+		"gpt":           buildGPT(),
+		"grok":          buildGrok(),
+		"astraflow":     buildAstraflow(),
+		"astraflow_cn":  buildAstraflowCN(),
 	}
 }
 
@@ -44,5 +51,36 @@ func buildGrok() provider.Provider {
 		return grok.New(strings.TrimSpace(os.Getenv("KLEIN_GROK_BASE_URL")))
 	default:
 		return mock.New("grok")
+	}
+}
+// buildAstraflow 构造 Astraflow 全球端点 provider（OpenAI 兼容，复用 gpt 包）。
+// 环境变量：KLEIN_PROVIDER_ASTRAFLOW=real|mock  ASTRAFLOW_API_KEY=sk-...
+func buildAstraflow() provider.Provider {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("KLEIN_PROVIDER_ASTRAFLOW")))
+	switch mode {
+	case "real", "live", "prod":
+		base := strings.TrimSpace(os.Getenv("KLEIN_ASTRAFLOW_BASE_URL"))
+		if base == "" {
+			base = astraflowBaseURL
+		}
+		return gpt.New(base)
+	default:
+		return mock.New("astraflow")
+	}
+}
+
+// buildAstraflowCN 构造 Astraflow 中国端点 provider（OpenAI 兼容，复用 gpt 包）。
+// 环境变量：KLEIN_PROVIDER_ASTRAFLOW_CN=real|mock  ASTRAFLOW_CN_API_KEY=sk-...
+func buildAstraflowCN() provider.Provider {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("KLEIN_PROVIDER_ASTRAFLOW_CN")))
+	switch mode {
+	case "real", "live", "prod":
+		base := strings.TrimSpace(os.Getenv("KLEIN_ASTRAFLOW_CN_BASE_URL"))
+		if base == "" {
+			base = astraflowCNBaseURL
+		}
+		return gpt.New(base)
+	default:
+		return mock.New("astraflow_cn")
 	}
 }
